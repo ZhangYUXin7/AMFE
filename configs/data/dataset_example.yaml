@@ -1,0 +1,8 @@
+# Example Ultralytics-style detection dataset description.
+# Replace the placeholder paths with your local dataset directories before using a real run.
+path: /absolute/path/to/dataset_root
+train: images/train
+val: images/val
+# test: images/test
+names:
+  0: object

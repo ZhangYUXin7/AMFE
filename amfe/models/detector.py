@@ -1,36 +1,78 @@
-"""Model wrapper that connects AMFE-Backbone, AMF-Neck, and Ultralytics Detect."""
+"""Detector wiring for Phase D.
+
+This module connects the implemented AMFE-Backbone and AMF-Neck to the native
+Ultralytics ``Detect`` head, and exposes a minimal training-style path that
+reuses Ultralytics' detection loss without redesigning the head or objective.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
+import torch
 from torch import Tensor, nn
+
+from amfe.ultralytics_compat import Detect, v8DetectionLoss
 
 from .backbone import AMFEBackbone
 from .neck import AMFNeck
 
-try:
-    from ultralytics.nn.modules import Detect
-except ImportError:  # pragma: no cover - exercised only in dependency-limited environments.
-    Detect = None  # type: ignore[assignment]
+
+@dataclass(frozen=True)
+class LossHyperparameters:
+    """Minimal subset of Ultralytics detection gains required by ``v8DetectionLoss``."""
+
+    box: float = 7.5
+    cls: float = 0.5
+    dfl: float = 1.5
 
 
 @dataclass(frozen=True)
 class AMFEModelConfig:
-    """Minimal Phase A wiring config.
-
-    This keeps only the parameters needed to scaffold the backbone, neck, and
-    Detect head interface while avoiding early over-building.
-    """
+    """Configuration for the integrated AMFE detector."""
 
     num_classes: int = 80
     in_channels: int = 3
     neck_channels: int = 256
+    stride_init_image_size: int = 256
+    loss_hyperparameters: LossHyperparameters = LossHyperparameters()
+
+    @classmethod
+    def from_mapping(cls, values: dict[str, Any]) -> "AMFEModelConfig":
+        """Create a config from a plain mapping.
+
+        The accepted keys mirror the YAML files committed in ``configs/model``.
+        """
+
+        loss_values = values.get("loss_hyperparameters", {})
+        if not isinstance(loss_values, dict):
+            raise TypeError("loss_hyperparameters must be a mapping when provided.")
+        return cls(
+            num_classes=int(values.get("num_classes", cls.num_classes)),
+            in_channels=int(values.get("in_channels", cls.in_channels)),
+            neck_channels=int(values.get("neck_channels", cls.neck_channels)),
+            stride_init_image_size=int(values.get("stride_init_image_size", cls.stride_init_image_size)),
+            loss_hyperparameters=LossHyperparameters(
+                box=float(loss_values.get("box", LossHyperparameters.box)),
+                cls=float(loss_values.get("cls", LossHyperparameters.cls)),
+                dfl=float(loss_values.get("dfl", LossHyperparameters.dfl)),
+            ),
+        )
 
 
-class AMFEDetector(nn.Module):
-    """Wrapper module that reuses the Ultralytics Detect head without redesigning it."""
+class AMFEYOLODetectionModel(nn.Module):
+    """AMFE detector with Ultralytics Detect head and loss-compatible model metadata.
+
+    The model keeps the architecture separation explicit:
+
+    Input -> AMFEBackbone -> AMFNeck -> Ultralytics Detect
+
+    ``self.model`` is a ``ModuleList`` solely to match the small contract expected
+    by Ultralytics' ``v8DetectionLoss`` helper, which looks up the final Detect
+    module as ``model.model[-1]``.
+    """
 
     def __init__(self, config: AMFEModelConfig) -> None:
         super().__init__()
@@ -44,10 +86,41 @@ class AMFEDetector(nn.Module):
             ),
             out_channels=config.neck_channels,
         )
-        if Detect is None:
-            self.detect = None
-        else:
-            self.detect = Detect(nc=config.num_classes, ch=(config.neck_channels,) * 3)
+        self.detect = Detect(nc=config.num_classes, ch=(config.neck_channels,) * 3)
+        self.model = nn.ModuleList([self.backbone, self.neck, self.detect])
+        self.args = SimpleNamespace(
+            box=config.loss_hyperparameters.box,
+            cls=config.loss_hyperparameters.cls,
+            dfl=config.loss_hyperparameters.dfl,
+        )
+        self.names = {index: str(index) for index in range(config.num_classes)}
+        self.stride = self._initialize_detect_head()
+        self.criterion: v8DetectionLoss | None = None
+
+    def _initialize_detect_head(self) -> Tensor:
+        """Infer Detect strides from a dummy feature pass and initialize head biases."""
+
+        image_size = self.config.stride_init_image_size
+        if image_size % 32 != 0:
+            raise ValueError(
+                "stride_init_image_size must be divisible by 32 so the backbone stride contract remains valid."
+            )
+
+        was_training = self.training
+        self.eval()
+        with torch.no_grad():
+            dummy = torch.zeros(1, self.config.in_channels, image_size, image_size)
+            features = self.forward_features(dummy)
+        stride = torch.tensor(
+            [image_size / feature.shape[-2] for feature in features],
+            dtype=features[0].dtype,
+            device=features[0].device,
+        )
+        self.detect.stride = stride
+        self.detect.bias_init()
+        if was_training:
+            self.train()
+        return stride
 
     def forward_features(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """Return N3/N4/N5 features before the Detect head."""
@@ -55,16 +128,78 @@ class AMFEDetector(nn.Module):
         return self.neck(self.backbone(x))
 
     def forward(self, x: Tensor) -> Any:
+        """Run a full forward pass through backbone, neck, and Detect head."""
+
         features = self.forward_features(x)
-        if self.detect is None:
-            raise ImportError(
-                "Ultralytics is not installed, so the Detect head scaffold cannot run. "
-                "Install the project dependencies from pyproject.toml to enable full forward passes."
-            )
         return self.detect(list(features))
 
+    def init_criterion(self) -> v8DetectionLoss:
+        """Create the Ultralytics detection loss used by the minimal training path."""
 
-def build_amfe_detector(num_classes: int = 80, in_channels: int = 3) -> AMFEDetector:
-    """Build a Phase A AMFE detector with minimal configuration wiring."""
+        return v8DetectionLoss(self)
 
-    return AMFEDetector(AMFEModelConfig(num_classes=num_classes, in_channels=in_channels))
+    def loss(self, batch: dict[str, Tensor], preds: Any | None = None) -> tuple[Tensor, Tensor]:
+        """Compute Ultralytics-compatible detection loss for a training batch."""
+
+        self._validate_batch(batch)
+        if self.criterion is None:
+            self.criterion = self.init_criterion()
+        if preds is None:
+            preds = self.forward(batch["img"])
+        loss_vector, loss_items = self.criterion(preds, batch)
+        return loss_vector.sum(), loss_items
+
+    def predict(self, x: Tensor) -> Any:
+        """Convenience inference wrapper used by scripts and smoke tests."""
+
+        was_training = self.training
+        self.eval()
+        with torch.no_grad():
+            outputs = self.forward(x)
+        if was_training:
+            self.train()
+        return outputs
+
+    def _validate_batch(self, batch: dict[str, Tensor]) -> None:
+        """Validate the minimal batch contract required by Ultralytics loss."""
+
+        required = {"img", "batch_idx", "cls", "bboxes"}
+        missing = sorted(required.difference(batch))
+        if missing:
+            raise KeyError(f"Training batch is missing required keys: {missing}")
+
+        images = batch["img"]
+        if images.ndim != 4:
+            raise ValueError(f"batch['img'] must be [B, C, H, W], received {tuple(images.shape)}.")
+        if images.shape[1] != self.config.in_channels:
+            raise ValueError(
+                f"Model expects {self.config.in_channels} input channels, received {images.shape[1]}."
+            )
+        batch_idx = batch["batch_idx"]
+        cls = batch["cls"]
+        bboxes = batch["bboxes"]
+        if batch_idx.ndim != 1:
+            raise ValueError("batch['batch_idx'] must be a 1D tensor of image indices.")
+        if cls.ndim not in {1, 2}:
+            raise ValueError("batch['cls'] must be a 1D or 2D tensor.")
+        if bboxes.ndim != 2 or bboxes.shape[1] != 4:
+            raise ValueError("batch['bboxes'] must be shaped [N, 4] in normalized xywh format.")
+        num_targets = batch_idx.shape[0]
+        if cls.shape[0] != num_targets or bboxes.shape[0] != num_targets:
+            raise ValueError("batch target tensors must agree on the number of annotations.")
+
+
+AMFEDetector = AMFEYOLODetectionModel
+
+
+def build_amfe_detector(
+    num_classes: int = 80,
+    in_channels: int = 3,
+    *,
+    neck_channels: int = 256,
+) -> AMFEYOLODetectionModel:
+    """Build an integrated AMFE detector with explicit configuration wiring."""
+
+    return AMFEYOLODetectionModel(
+        AMFEModelConfig(num_classes=num_classes, in_channels=in_channels, neck_channels=neck_channels)
+    )

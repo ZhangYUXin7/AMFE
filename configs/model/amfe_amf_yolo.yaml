@@ -1,0 +1,9 @@
+model:
+  num_classes: 80
+  in_channels: 3
+  neck_channels: 256
+  stride_init_image_size: 256
+  loss_hyperparameters:
+    box: 7.5
+    cls: 0.5
+    dfl: 1.5
