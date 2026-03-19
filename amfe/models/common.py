@@ -1,10 +1,10 @@
-"""Shared building blocks used by the Phase A AMFE model scaffolding."""
+"""Shared building blocks used by the AMFE model implementation."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Final
 
-import torch
 from torch import Tensor, nn
 
 _DEFAULT_EPS: Final[float] = 1e-5
@@ -12,20 +12,20 @@ _DEFAULT_MOMENTUM: Final[float] = 0.1
 
 
 class ConvBNAct(nn.Sequential):
-    """Convolution followed by batch normalization and SiLU activation."""
+    """Convolution followed by batch normalization and optional SiLU activation."""
 
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
         *,
-        kernel_size: int = 3,
-        stride: int = 1,
+        kernel_size: int | tuple[int, int] = 3,
+        stride: int | tuple[int, int] = 1,
         groups: int = 1,
-        dilation: int = 1,
+        dilation: int | tuple[int, int] = 1,
         activation: bool = True,
     ) -> None:
-        padding = ((kernel_size - 1) // 2) * dilation
+        padding = _same_padding(kernel_size, dilation)
         layers: list[nn.Module] = [
             nn.Conv2d(
                 in_channels,
@@ -56,7 +56,7 @@ class ResidualProjection(nn.Module):
 
 
 class DepthwiseSeparableConv(nn.Module):
-    """Depthwise separable convolution used for lightweight placeholder blocks."""
+    """Depthwise separable convolution available for lightweight module design."""
 
     def __init__(self, in_channels: int, out_channels: int, *, stride: int = 1) -> None:
         super().__init__()
@@ -76,3 +76,16 @@ def ensure_feature_channels(feature: Tensor, *, expected_channels: int, name: st
         raise ValueError(
             f"{name} expected {expected_channels} channels, but received {feature.shape[1]}."
         )
+
+
+def _same_padding(
+    kernel_size: int | tuple[int, int],
+    dilation: int | tuple[int, int],
+) -> int | tuple[int, int]:
+    if isinstance(kernel_size, Sequence):
+        if not isinstance(dilation, Sequence):
+            dilation = (dilation, dilation)
+        return tuple(((k - 1) // 2) * d for k, d in zip(kernel_size, dilation, strict=True))
+    if isinstance(dilation, Sequence):
+        raise TypeError("Tuple dilation requires tuple kernel_size in ConvBNAct.")
+    return ((kernel_size - 1) // 2) * dilation
