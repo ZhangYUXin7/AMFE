@@ -1,7 +1,25 @@
 """AMFE project package.
 
-This package hosts conservative, testable scaffolding for the AMFE backbone,
-AMF neck, and a model wrapper that reuses the Ultralytics Detect head.
+This package provides a conservative AMFE-Backbone + AMF-Neck implementation
+and a minimal Ultralytics-compatible detector/training path for Phase D.
 """
 
-__all__ = []
+from .models import (
+    AMFEBackbone,
+    AMFEDetector,
+    AMFEModelConfig,
+    AMFEYOLODetectionModel,
+    AMFNeck,
+    build_amfe_detector,
+    build_model_from_yaml,
+)
+
+__all__ = [
+    "AMFEBackbone",
+    "AMFEDetector",
+    "AMFEModelConfig",
+    "AMFEYOLODetectionModel",
+    "AMFNeck",
+    "build_amfe_detector",
+    "build_model_from_yaml",
+]
