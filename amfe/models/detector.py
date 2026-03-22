@@ -77,6 +77,7 @@ class AMFEYOLODetectionModel(nn.Module):
     def __init__(self, config: AMFEModelConfig) -> None:
         super().__init__()
         self.config = config
+        self.nc = config.num_classes
         self.backbone = AMFEBackbone(in_channels=config.in_channels)
         self.neck = AMFNeck(
             in_channels=(
@@ -93,6 +94,20 @@ class AMFEYOLODetectionModel(nn.Module):
             cls=config.loss_hyperparameters.cls,
             dfl=config.loss_hyperparameters.dfl,
         )
+        self.end2end = False
+        self.task = "detect"
+        self.yaml = {
+            "num_classes": config.num_classes,
+            "in_channels": config.in_channels,
+            "neck_channels": config.neck_channels,
+            "stride_init_image_size": config.stride_init_image_size,
+            "loss_hyperparameters": {
+                "box": config.loss_hyperparameters.box,
+                "cls": config.loss_hyperparameters.cls,
+                "dfl": config.loss_hyperparameters.dfl,
+            },
+            "channels": config.in_channels,
+        }
         self.names = {index: str(index) for index in range(config.num_classes)}
         self.stride = self._initialize_detect_head()
         self.criterion: v8DetectionLoss | None = None
@@ -127,11 +142,12 @@ class AMFEYOLODetectionModel(nn.Module):
 
         return self.neck(self.backbone(x))
 
-    def forward(self, x: Tensor) -> Any:
-        """Run a full forward pass through backbone, neck, and Detect head."""
+    def forward(self, x: Tensor | dict[str, Tensor], *args: Any, **kwargs: Any) -> Any:
+        """Match the Ultralytics ``BaseModel`` forward contract for trainer compatibility."""
 
-        features = self.forward_features(x)
-        return self.detect(list(features))
+        if isinstance(x, dict):
+            return self.loss(x, *args, **kwargs)
+        return self.predict(x, *args, **kwargs)
 
     def init_criterion(self) -> v8DetectionLoss:
         """Create the Ultralytics detection loss used by the minimal training path."""
@@ -149,16 +165,27 @@ class AMFEYOLODetectionModel(nn.Module):
         loss_vector, loss_items = self.criterion(preds, batch)
         return loss_vector.sum(), loss_items
 
-    def predict(self, x: Tensor) -> Any:
-        """Convenience inference wrapper used by scripts and smoke tests."""
+    def predict(
+        self,
+        x: Tensor,
+        profile: bool = False,
+        visualize: bool = False,
+        augment: bool = False,
+        embed: list[int] | None = None,
+    ) -> Any:
+        """Run inference while accepting the keyword arguments Ultralytics validators pass through."""
 
-        was_training = self.training
-        self.eval()
-        with torch.no_grad():
-            outputs = self.forward(x)
-        if was_training:
-            self.train()
-        return outputs
+        if profile:
+            raise NotImplementedError("Per-layer profiling is not implemented for AMFEYOLODetectionModel.")
+        if visualize:
+            raise NotImplementedError("Feature-map visualization hooks are not implemented for AMFEYOLODetectionModel.")
+        if augment:
+            raise NotImplementedError("Augmented inference is not implemented for AMFEYOLODetectionModel.")
+        if embed is not None:
+            raise NotImplementedError("Embedding extraction is not implemented for AMFEYOLODetectionModel.")
+
+        features = self.forward_features(x)
+        return self.detect(list(features))
 
     def _validate_batch(self, batch: dict[str, Tensor]) -> None:
         """Validate the minimal batch contract required by Ultralytics loss."""

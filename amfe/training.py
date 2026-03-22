@@ -1,0 +1,150 @@
+"""Ultralytics training bridge for the AMFE detector."""
+
+from __future__ import annotations
+
+import time
+from copy import deepcopy
+from pathlib import Path
+from typing import Any, Mapping
+
+from ultralytics.cfg import DEFAULT_CFG
+from ultralytics.models.yolo.detect.train import DetectionTrainer
+from ultralytics.utils import LOGGER, RANK
+
+from amfe.models import AMFEYOLODetectionModel, build_model_from_config, load_yaml_config
+
+
+def _format_epoch_summary(
+    *,
+    epoch_index: int,
+    total_epochs: int,
+    elapsed_seconds: float,
+    losses: Mapping[str, float] | None,
+) -> str:
+    """Build a compact epoch-level training summary for terminal output."""
+
+    parts = [
+        f"Epoch {epoch_index}/{total_epochs}",
+        f"time={elapsed_seconds:.2f}s",
+    ]
+    if not losses:
+        parts.append("loss=n/a")
+        return " | ".join(parts)
+
+    total_loss = sum(losses.values())
+    parts.append(f"loss={total_loss:.5f}")
+    parts.extend(f"{name}={value:.5f}" for name, value in losses.items())
+    return " | ".join(parts)
+
+
+class AMFEDetectionTrainer(DetectionTrainer):
+    """Detection trainer that builds the AMFE detector instead of a stock YOLO backbone."""
+
+    def __init__(self, cfg: Any = None, overrides: dict[str, Any] | None = None, _callbacks: dict | None = None) -> None:
+        """Initialize the trainer and register epoch-level terminal logging callbacks."""
+
+        trainer_cfg = DEFAULT_CFG if cfg is None else cfg
+        super().__init__(cfg=trainer_cfg, overrides=overrides, _callbacks=_callbacks)
+        self._epoch_start_time: float | None = None
+        self.add_callback("on_train_epoch_start", self._on_train_epoch_start)
+        self.add_callback("on_train_epoch_end", self._on_train_epoch_end)
+
+    def get_model(
+        self,
+        cfg: str | Path | dict[str, Any] | None = None,
+        weights: Any | None = None,
+        verbose: bool = True,
+    ) -> AMFEYOLODetectionModel:
+        """Build the configured AMFE detector and optionally load checkpoint weights."""
+
+        del verbose  # The AMFE builder does not currently expose a verbosity toggle.
+
+        if cfg is None:
+            raise ValueError("AMFEDetectionTrainer requires an AMFE model configuration.")
+        config = self._load_model_config(cfg)
+        model_cfg = config.get("model", config)
+        if not isinstance(model_cfg, dict):
+            raise TypeError("AMFE model configuration must deserialize to a mapping.")
+
+        dataset_nc = int(self.data["nc"])
+        model_nc = int(model_cfg.get("num_classes", dataset_nc))
+        if model_nc != dataset_nc:
+            raise ValueError(
+                f"Model config num_classes={model_nc} does not match dataset nc={dataset_nc}. "
+                "Use a matching model config for the target dataset."
+            )
+
+        dataset_channels = int(self.data.get("channels", 3))
+        model_channels = int(model_cfg.get("in_channels", dataset_channels))
+        if model_channels != dataset_channels:
+            raise ValueError(
+                f"Model config in_channels={model_channels} does not match dataset channels={dataset_channels}."
+            )
+
+        model = build_model_from_config(config)
+        if weights is not None:
+            self._load_model_weights(model, weights)
+        return model
+
+    @staticmethod
+    def _load_model_config(cfg: str | Path | dict[str, Any]) -> dict[str, Any]:
+        """Load the AMFE model config from disk or normalize an in-memory mapping."""
+
+        if isinstance(cfg, (str, Path)):
+            return load_yaml_config(cfg)
+        if isinstance(cfg, dict):
+            return deepcopy(cfg)
+        raise TypeError(f"Unsupported AMFE model config type: {type(cfg)!r}")
+
+    @staticmethod
+    def _load_model_weights(model: AMFEYOLODetectionModel, weights: Any) -> None:
+        """Load checkpoint weights into the AMFE detector with an explicit failure mode."""
+
+        source_state = weights.state_dict() if hasattr(weights, "state_dict") else weights
+        if not isinstance(source_state, dict):
+            raise TypeError("Checkpoint weights must expose a state_dict-compatible mapping.")
+        model.load_state_dict(source_state)
+
+    def _on_train_epoch_start(self, trainer: DetectionTrainer) -> None:
+        """Capture the wall-clock start time for the current epoch."""
+
+        del trainer  # The callback is instance-scoped; the bound trainer is sufficient.
+        self._epoch_start_time = time.perf_counter()
+
+    def _on_train_epoch_end(self, trainer: DetectionTrainer) -> None:
+        """Emit a concise terminal summary for the completed epoch on the main process only."""
+
+        del trainer  # The callback is instance-scoped; the bound trainer is sufficient.
+        if RANK not in {-1, 0}:
+            return
+
+        LOGGER.info(
+            _format_epoch_summary(
+                epoch_index=self.epoch + 1,
+                total_epochs=self.epochs,
+                elapsed_seconds=self._epoch_elapsed_seconds(),
+                losses=self._epoch_loss_summary(),
+            )
+        )
+
+    def _epoch_elapsed_seconds(self) -> float:
+        """Return elapsed epoch wall time, defaulting to zero if the start hook was skipped."""
+
+        if self._epoch_start_time is None:
+            return 0.0
+        return max(time.perf_counter() - self._epoch_start_time, 0.0)
+
+    def _epoch_loss_summary(self) -> dict[str, float] | None:
+        """Return the current epoch mean loss items as a plain dictionary."""
+
+        if self.tloss is None:
+            return None
+
+        labeled_losses = self.label_loss_items(loss_items=self.tloss, prefix="train")
+        return {
+            name.split("/", 1)[-1]: float(value)
+            for name, value in labeled_losses.items()
+        }
+
+
+__all__ = ["AMFEDetectionTrainer", "_format_epoch_summary"]

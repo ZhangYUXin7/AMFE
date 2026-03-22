@@ -1,3 +1,6 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+runs/
+true_datasets/
+yolo26n.pt

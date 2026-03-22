@@ -1,0 +1,24 @@
+model_config: configs/model/amfe_amf_yolo_visdrone.yaml
+data: configs/data/visdrone_local.yaml
+training:
+  imgsz: 320
+  epochs: 1
+  batch: 2
+  workers: 0
+  optimizer: SGD
+  lr0: 0.01
+  weight_decay: 0.0005
+  device: 0
+  amp: false
+  cache: false
+  val: true
+  save: true
+  plots: false
+  patience: 1
+  seed: 0
+  deterministic: true
+  verbose: true
+  project: runs/phase_e
+  name: visdrone_smoke
+  exist_ok: true
+  synthetic_smoke: false

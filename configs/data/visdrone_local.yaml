@@ -1,0 +1,16 @@
+# Local VisDrone YOLO dataset config for Phase E real-data integration.
+# Update the absolute path if this repository is moved to a different workspace.
+path: D:/code/AMFE/true_datasets/visdrone_yolo
+train: images/train
+val: images/val
+names:
+  0: pedestrian
+  1: people
+  2: bicycle
+  3: car
+  4: van
+  5: truck
+  6: tricycle
+  7: awning-tricycle
+  8: bus
+  9: motor

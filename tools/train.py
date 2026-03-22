@@ -1,18 +1,11 @@
-"""Minimal training launcher for the integrated AMFE detector.
-
-Phase D intentionally focuses on a conservative, reproducible path that proves
-model build, forward, loss, backward, and optimizer-step compatibility. The
-launcher therefore supports two modes:
-
-1. ``--synthetic-smoke``: one optimizer step on synthetic data.
-2. Config validation for future real-data runs, without hardcoding dataset paths.
-"""
+"""Training and smoke-test launcher for the AMFE detector."""
 
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch import Tensor
@@ -21,10 +14,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from amfe.data import inspect_yolo_data_config
 from amfe.models import build_model_from_yaml, load_yaml_config
+from amfe.training import AMFEDetectionTrainer
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse the launcher arguments."""
+
     parser = argparse.ArgumentParser(description="Train or smoke-test the AMFE detector.")
     parser.add_argument(
         "--config",
@@ -34,13 +31,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--synthetic-smoke",
         action="store_true",
-        help="Run one synthetic optimizer step instead of expecting a prepared dataset.",
+        help="Run one synthetic optimizer step instead of a real dataset-driven training job.",
+    )
+    parser.add_argument(
+        "--check-data-only",
+        action="store_true",
+        help="Validate and summarize the configured real dataset without launching training.",
     )
     return parser.parse_args()
 
 
 def synthetic_batch(batch_size: int, image_size: int, num_classes: int, device: torch.device) -> dict[str, Tensor]:
-    """Create a lightweight synthetic detection batch in Ultralytics loss format."""
+    """Build a lightweight synthetic detection batch compatible with Ultralytics loss."""
 
     images = torch.randn(batch_size, 3, image_size, image_size, device=device)
     batch_idx = torch.arange(batch_size, device=device, dtype=torch.long)
@@ -61,8 +63,8 @@ def synthetic_batch(batch_size: int, image_size: int, num_classes: int, device: 
     }
 
 
-def run_synthetic_smoke(config: dict) -> None:
-    """Build the model and execute one forward/loss/backward/step cycle."""
+def run_synthetic_smoke(config: dict[str, Any]) -> None:
+    """Run one forward/loss/backward/optimizer-step cycle with synthetic tensors."""
 
     training_cfg = config.get("training", {})
     model = build_model_from_yaml(config["model_config"])
@@ -96,39 +98,126 @@ def run_synthetic_smoke(config: dict) -> None:
     )
 
 
-def validate_real_run_inputs(config: dict) -> None:
-    """Validate config paths for later real-data training without starting dataset-specific logic."""
+def inspect_real_run_inputs(config: dict[str, Any]) -> Any:
+    """Validate the real dataset config and print a concise summary."""
 
-    data_path = Path(config["data"])
-    if not data_path.is_file():
-        raise FileNotFoundError(
-            f"Training data config was not found: {data_path}. Provide a valid Ultralytics-style dataset YAML."
-        )
+    summary = inspect_yolo_data_config(config["data"], model_config=config["model_config"])
+    print(
+        "Real dataset summary:",
+        {
+            "data_yaml": str(summary.data_yaml),
+            "dataset_root": str(summary.dataset_root),
+            "dataset_yaml_in_root": str(summary.dataset_yaml_in_root) if summary.dataset_yaml_in_root else None,
+            "train_images_dir": str(summary.train_images_dir),
+            "val_images_dir": str(summary.val_images_dir),
+            "train_labels_dir": str(summary.train_labels_dir),
+            "val_labels_dir": str(summary.val_labels_dir),
+            "nc": summary.nc,
+            "names": list(summary.names),
+            "split_image_counts": summary.split_image_counts,
+            "split_label_counts": summary.split_label_counts,
+            "annotation_rows": summary.annotation_rows,
+            "empty_label_files": summary.empty_label_files,
+        },
+    )
+    return summary
 
-    data_cfg = load_yaml_config(data_path)
-    dataset_root = Path(str(data_cfg.get("path", "")))
-    if not dataset_root.exists():
-        raise FileNotFoundError(
-            "Dataset root in the data config does not exist. Update configs/data/dataset_example.yaml "
-            "or pass a prepared dataset YAML before attempting a real training run."
-        )
 
-    raise RuntimeError(
-        "Real dataset-driven training is intentionally not launched in Phase D. "
-        "Use --synthetic-smoke to verify the training path today, then point this script at a prepared "
-        "Ultralytics-format dataset in a later phase."
+def build_trainer_overrides(config: dict[str, Any]) -> dict[str, Any]:
+    """Translate the project training YAML into Ultralytics trainer overrides."""
+
+    training_cfg = config.get("training", {})
+    model_payload = load_yaml_config(config["model_config"])
+    model_cfg = model_payload.get("model", model_payload)
+    loss_cfg = model_cfg.get("loss_hyperparameters", {})
+
+    overrides: dict[str, Any] = {
+        "model": str(Path(config["model_config"]).resolve()),
+        "data": str(Path(config["data"]).resolve()),
+        "imgsz": int(training_cfg.get("imgsz", 640)),
+        "epochs": int(training_cfg.get("epochs", 300)),
+        "batch": int(training_cfg.get("batch", 8)),
+        "workers": int(training_cfg.get("workers", 8)),
+        "optimizer": str(training_cfg.get("optimizer", "SGD")),
+        "lr0": float(training_cfg.get("lr0", 0.01)),
+        "weight_decay": float(training_cfg.get("weight_decay", 5e-4)),
+        "device": training_cfg.get("device", "cpu"),
+        "amp": bool(training_cfg.get("amp", False)),
+        "save": bool(training_cfg.get("save", True)),
+        "val": bool(training_cfg.get("val", True)),
+        "plots": bool(training_cfg.get("plots", False)),
+        "cache": bool(training_cfg.get("cache", False)),
+        "project": str(Path(training_cfg.get("project", "runs")).resolve()),
+        "name": str(training_cfg.get("name", "train")),
+        "exist_ok": bool(training_cfg.get("exist_ok", False)),
+        "patience": int(training_cfg.get("patience", 100)),
+        "seed": int(training_cfg.get("seed", 0)),
+        "deterministic": bool(training_cfg.get("deterministic", True)),
+        "verbose": bool(training_cfg.get("verbose", True)),
+        "pretrained": training_cfg.get("pretrained", False),
+        "box": float(loss_cfg.get("box", 7.5)),
+        "cls": float(loss_cfg.get("cls", 0.5)),
+        "dfl": float(loss_cfg.get("dfl", 1.5)),
+    }
+
+    optional_keys = (
+        "resume",
+        "close_mosaic",
+        "save_period",
+        "warmup_epochs",
+        "momentum",
+        "single_cls",
+        "cos_lr",
+        "degrees",
+        "translate",
+        "scale",
+        "fliplr",
+        "flipud",
+        "mosaic",
+        "mixup",
+        "copy_paste",
+    )
+    for key in optional_keys:
+        if key in training_cfg:
+            overrides[key] = training_cfg[key]
+    return overrides
+
+
+def run_real_training(config: dict[str, Any]) -> None:
+    """Launch a real-data training run through the Ultralytics detection trainer."""
+
+    inspect_real_run_inputs(config)
+    trainer = AMFEDetectionTrainer(overrides=build_trainer_overrides(config))
+    trainer.train()
+
+    print(
+        "Real-data training completed:",
+        {
+            "save_dir": str(trainer.save_dir),
+            "best": str(trainer.best),
+            "last": str(trainer.last),
+            "results_csv": str(trainer.csv),
+        },
     )
 
 
 def main() -> None:
+    """Load the selected config and execute the requested Phase D/E path."""
+
     args = parse_args()
     config = load_yaml_config(args.config)
     if "model_config" not in config:
         raise KeyError("Training config must define 'model_config'.")
+    if "data" not in config:
+        raise KeyError("Training config must define 'data'.")
+
     if args.synthetic_smoke or config.get("training", {}).get("synthetic_smoke", False):
         run_synthetic_smoke(config)
         return
-    validate_real_run_inputs(config)
+    if args.check_data_only:
+        inspect_real_run_inputs(config)
+        return
+    run_real_training(config)
 
 
 if __name__ == "__main__":
