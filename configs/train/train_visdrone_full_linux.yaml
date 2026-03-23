@@ -1,15 +1,15 @@
 model_config: configs/model/amfe_amf_yolo_visdrone.yaml
-data: configs/data/visdrone_local.yaml
+data: configs/data/visdrone_linux.yaml
 training:
-  imgsz: 640
+  imgsz: 960
   epochs: 100
-  batch: 4
-  workers: 4
+  batch: 7
+  workers: 8
   optimizer: SGD
   lr0: 0.01
   weight_decay: 0.0005
   device: 0
-  amp: false
+  amp: true
   cache: false
   val: true
   save: true
@@ -19,7 +19,6 @@ training:
   deterministic: true
   verbose: true
   project: runs/experiments
-  name: visdrone_full_100e
-  exist_ok: true
+  name: visdrone_960_b8_amp
+  exist_ok: false
   synthetic_smoke: false
-#  resume: D:/code/AMFE/runs/experiments/visdrone_full_100e/weights/last.pt

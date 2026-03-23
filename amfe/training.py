@@ -7,9 +7,12 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping
 
-from ultralytics.cfg import DEFAULT_CFG
+from ultralytics.cfg import DEFAULT_CFG, get_cfg
 from ultralytics.models.yolo.detect.train import DetectionTrainer
+from ultralytics.nn.tasks import load_checkpoint
 from ultralytics.utils import LOGGER, RANK
+from ultralytics.utils.checks import check_file
+from ultralytics.utils.files import get_latest_run
 
 from amfe.models import AMFEYOLODetectionModel, build_model_from_config, load_yaml_config
 
@@ -39,6 +42,25 @@ def _format_epoch_summary(
 
 class AMFEDetectionTrainer(DetectionTrainer):
     """Detection trainer that builds the AMFE detector instead of a stock YOLO backbone."""
+
+    _RESUME_OVERRIDE_KEYS = (
+        "imgsz",
+        "batch",
+        "device",
+        "close_mosaic",
+        "augmentations",
+        "save_period",
+        "workers",
+        "cache",
+        "patience",
+        "time",
+        "freeze",
+        "val",
+        "plots",
+        "project",
+        "name",
+        "exist_ok",
+    )
 
     def __init__(self, cfg: Any = None, overrides: dict[str, Any] | None = None, _callbacks: dict | None = None) -> None:
         """Initialize the trainer and register epoch-level terminal logging callbacks."""
@@ -85,6 +107,49 @@ class AMFEDetectionTrainer(DetectionTrainer):
         if weights is not None:
             self._load_model_weights(model, weights)
         return model
+
+    def check_resume(self, overrides: dict[str, Any] | None) -> None:
+        """Allow workspace-specific save paths to override checkpoint args when resuming training."""
+
+        overrides = {} if overrides is None else dict(overrides)
+        resume = self.args.resume
+        if not resume:
+            self.resume = resume
+            return
+
+        try:
+            exists = isinstance(resume, (str, Path)) and Path(resume).exists()
+            last = Path(check_file(resume) if exists else get_latest_run())
+
+            ckpt_args = dict(load_checkpoint(last)[0].args)
+            if not isinstance(ckpt_args["data"], dict) and not Path(ckpt_args["data"]).exists():
+                ckpt_args["data"] = self.args.data
+
+            if any(key in overrides for key in ("project", "name", "exist_ok")):
+                ckpt_args["save_dir"] = None
+
+            for key in self._RESUME_OVERRIDE_KEYS:
+                if key in overrides:
+                    ckpt_args[key] = overrides[key]
+
+            resume = True
+            self.args = get_cfg(ckpt_args)
+            self.args.model = self.args.resume = str(last)
+
+            if ckpt_args.get("augmentations") is not None:
+                LOGGER.warning(
+                    "Custom Albumentations transforms were used in the original training run but are not "
+                    "being restored. To preserve custom augmentations when resuming, you need to pass the "
+                    "'augmentations' parameter again to get expected results. Example: \n"
+                    f"model.train(resume=True, augmentations={ckpt_args['augmentations']})"
+                )
+        except Exception as exc:
+            raise FileNotFoundError(
+                "Resume checkpoint not found. Please pass a valid checkpoint to resume from, "
+                "i.e. 'yolo train resume model=path/to/last.pt'"
+            ) from exc
+
+        self.resume = resume
 
     @staticmethod
     def _load_model_config(cfg: str | Path | dict[str, Any]) -> dict[str, Any]:
