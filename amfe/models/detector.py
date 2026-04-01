@@ -1,4 +1,4 @@
-"""Detector wiring for Phase D.
+﻿"""Detector wiring for Phase D.
 
 This module connects the implemented AMFE-Backbone and AMF-Neck to the native
 Ultralytics ``Detect`` head, and exposes a minimal training-style path that
@@ -36,15 +36,13 @@ class AMFEModelConfig:
     num_classes: int = 80
     in_channels: int = 3
     neck_channels: int = 256
+    msb_variant: str = "yolov8_s"
     stride_init_image_size: int = 256
     loss_hyperparameters: LossHyperparameters = LossHyperparameters()
 
     @classmethod
     def from_mapping(cls, values: dict[str, Any]) -> "AMFEModelConfig":
-        """Create a config from a plain mapping.
-
-        The accepted keys mirror the YAML files committed in ``configs/model``.
-        """
+        """Create a config from a plain mapping."""
 
         loss_values = values.get("loss_hyperparameters", {})
         if not isinstance(loss_values, dict):
@@ -53,6 +51,7 @@ class AMFEModelConfig:
             num_classes=int(values.get("num_classes", cls.num_classes)),
             in_channels=int(values.get("in_channels", cls.in_channels)),
             neck_channels=int(values.get("neck_channels", cls.neck_channels)),
+            msb_variant=str(values.get("msb_variant", cls.msb_variant)),
             stride_init_image_size=int(values.get("stride_init_image_size", cls.stride_init_image_size)),
             loss_hyperparameters=LossHyperparameters(
                 box=float(loss_values.get("box", LossHyperparameters.box)),
@@ -63,22 +62,16 @@ class AMFEModelConfig:
 
 
 class AMFEYOLODetectionModel(nn.Module):
-    """AMFE detector with Ultralytics Detect head and loss-compatible model metadata.
-
-    The model keeps the architecture separation explicit:
-
-    Input -> AMFEBackbone -> AMFNeck -> Ultralytics Detect
-
-    ``self.model`` is a ``ModuleList`` solely to match the small contract expected
-    by Ultralytics' ``v8DetectionLoss`` helper, which looks up the final Detect
-    module as ``model.model[-1]``.
-    """
+    """AMFE detector with Ultralytics Detect head and loss-compatible metadata."""
 
     def __init__(self, config: AMFEModelConfig) -> None:
         super().__init__()
         self.config = config
         self.nc = config.num_classes
-        self.backbone = AMFEBackbone(in_channels=config.in_channels)
+        self.backbone = AMFEBackbone(
+            in_channels=config.in_channels,
+            msb_variant=config.msb_variant,
+        )
         self.neck = AMFNeck(
             in_channels=(
                 self.backbone.output_channels.f3,
@@ -100,6 +93,7 @@ class AMFEYOLODetectionModel(nn.Module):
             "num_classes": config.num_classes,
             "in_channels": config.in_channels,
             "neck_channels": config.neck_channels,
+            "msb_variant": config.msb_variant,
             "stride_init_image_size": config.stride_init_image_size,
             "loss_hyperparameters": {
                 "box": config.loss_hyperparameters.box,
@@ -224,9 +218,15 @@ def build_amfe_detector(
     in_channels: int = 3,
     *,
     neck_channels: int = 256,
+    msb_variant: str = "yolov8_s",
 ) -> AMFEYOLODetectionModel:
     """Build an integrated AMFE detector with explicit configuration wiring."""
 
     return AMFEYOLODetectionModel(
-        AMFEModelConfig(num_classes=num_classes, in_channels=in_channels, neck_channels=neck_channels)
+        AMFEModelConfig(
+            num_classes=num_classes,
+            in_channels=in_channels,
+            neck_channels=neck_channels,
+            msb_variant=msb_variant,
+        )
     )

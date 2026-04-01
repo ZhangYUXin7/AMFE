@@ -3,13 +3,13 @@ data: configs/data/visdrone_local.yaml
 training:
   imgsz: 640
   epochs: 100
-  batch: 4
+  batch: 8
   workers: 4
   optimizer: SGD
   lr0: 0.01
   weight_decay: 0.0005
   device: 0
-  amp: false
+  amp: true
   cache: false
   val: true
   save: true
@@ -19,7 +19,7 @@ training:
   deterministic: true
   verbose: true
   project: runs/experiments
-  name: visdrone_full_100e
+  name: visdrone_yolo_backbone
   exist_ok: true
   synthetic_smoke: false
-#  resume: D:/code/AMFE/runs/experiments/visdrone_full_100e/weights/last.pt
+  resume: D:/code/AMFE/runs/experiments/visdrone_yolo_backbone/weights/last.pt

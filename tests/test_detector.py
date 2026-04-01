@@ -1,5 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 import torch
 
 from amfe.models import AMFEModelConfig, AMFEYOLODetectionModel, build_amfe_detector, build_model_from_yaml
@@ -28,7 +31,7 @@ def test_amfe_detector_forward_smoke() -> None:
 
 
 @torch.no_grad()
-def test_amfe_detector_feature_shapes() -> None:
+def test_amfe_detector_feature_shapes_and_backbone_trace() -> None:
     model = AMFEYOLODetectionModel(AMFEModelConfig(num_classes=3))
     n3, n4, n5 = model.forward_features(torch.randn(1, 3, 128, 128))
 
@@ -36,6 +39,20 @@ def test_amfe_detector_feature_shapes() -> None:
     assert n4.shape == (1, 256, 8, 8)
     assert n5.shape == (1, 256, 4, 4)
     assert tuple(model.stride.tolist()) == (8.0, 16.0, 32.0)
+    assert model.backbone.last_forward_shapes == {
+        "S2": (1, 64, 32, 32),
+        "C3": (1, 256, 16, 16),
+        "C4": (1, 512, 8, 8),
+        "C5": (1, 512, 4, 4),
+        "D3": (1, 128, 16, 16),
+        "D4": (1, 256, 8, 8),
+        "G3": (1, 256, 16, 16),
+        "G4": (1, 256, 8, 8),
+        "G5": (1, 256, 4, 4),
+        "F3": (1, 256, 16, 16),
+        "F4": (1, 512, 8, 8),
+        "F5": (1, 512, 4, 4),
+    }
 
 
 def test_amfe_detector_loss_backward_and_optimizer_step() -> None:
@@ -65,3 +82,19 @@ def test_build_model_from_yaml() -> None:
     outputs = model(torch.randn(1, 3, 128, 128))
 
     assert isinstance(outputs, dict)
+    assert model.config.msb_variant == "yolov8_s"
+    assert model.config.neck_channels == 256
+    assert model.backbone.output_channels.f3 == 256
+    assert model.backbone.output_channels.f4 == 512
+    assert model.backbone.output_channels.f5 == 512
+
+
+@torch.no_grad()
+def test_build_visdrone_model_from_yaml() -> None:
+    path = Path("configs/model/amfe_amf_yolo_visdrone.yaml")
+    model = build_model_from_yaml(path)
+    outputs = model(torch.randn(1, 3, 128, 128))
+
+    assert isinstance(outputs, dict)
+    assert model.config.num_classes == 10
+    assert model.config.neck_channels == 256

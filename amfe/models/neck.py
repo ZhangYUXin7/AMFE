@@ -1,4 +1,4 @@
-"""Phase A AMF-Neck scaffolding.
+﻿"""Phase A AMF-Neck scaffolding.
 
 The neck keeps channel alignment, top-down selective fusion, and bottom-up
 refinement as separate modules so later phases can increase fidelity without
@@ -37,11 +37,7 @@ class CAF(nn.Module):
 
 
 class TDSF(nn.Module):
-    """Top-Down Selective Fusion.
-
-    The Phase A version uses lightweight gating to keep top-down fusion distinct
-    from the bottom-up refinement path.
-    """
+    """Top-Down Selective Fusion."""
 
     def __init__(self, channels: int = 256) -> None:
         super().__init__()
@@ -71,15 +67,20 @@ class BURF(nn.Module):
 
 
 class AMFNeck(nn.Module):
-    """Conservative Phase A scaffold for AMF-Neck.
+    """Conservative AMF-Neck scaffold.
 
     Input feature order is explicit and fixed: (F3, F4, F5).
     Output feature order is explicit and fixed: (N3, N4, N5).
+
+    First-revision backbone contract before the neck:
+    - F3: [B, 256, H/8, W/8]
+    - F4: [B, 512, H/16, W/16]
+    - F5: [B, 512, H/32, W/32]
     """
 
     output_channels = NeckOutputChannels()
 
-    def __init__(self, in_channels: tuple[int, int, int] = (512, 1024, 2048), out_channels: int = 256) -> None:
+    def __init__(self, in_channels: tuple[int, int, int] = (256, 512, 512), out_channels: int = 256) -> None:
         super().__init__()
         self.expected_in_channels = in_channels
         self.caf3 = CAF(in_channels[0], out_channels=out_channels)

@@ -1,4 +1,4 @@
-"""Auxiliary detail branch modules for AMFE-Backbone."""
+﻿"""Auxiliary detail branch modules for AMFE-Backbone."""
 
 from __future__ import annotations
 
@@ -8,16 +8,13 @@ from ..common import ConvBNAct, ResidualProjection
 
 
 class DEB(nn.Module):
-    """Detail Enhancement Block used inside the auxiliary detail branch.
+    """Detail Enhancement Block used inside the lightweight ADB.
 
     Fixed structure:
-    Input
-    → DWConv3×3(stride=s)
-    → PWConv1×1(out_channels)
-    → DWConv3×3(stride=1, dilation=2)
-    → PWConv1×1(out_channels)
-    → Residual/Shortcut
-    → Output
+    - DWConv 3x3, stride=s
+    - PWConv 1x1 to the target width
+    - Residual projection when shape changes
+    - SiLU activation after residual addition
     """
 
     def __init__(self, in_channels: int, out_channels: int, stride: int) -> None:
@@ -27,22 +24,14 @@ class DEB(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.stride = stride
-        self.dwconv1 = ConvBNAct(
+        self.dwconv = ConvBNAct(
             in_channels,
             in_channels,
             kernel_size=3,
             stride=stride,
             groups=in_channels,
         )
-        self.pwconv1 = ConvBNAct(in_channels, out_channels, kernel_size=1)
-        self.dwconv2 = ConvBNAct(
-            out_channels,
-            out_channels,
-            kernel_size=3,
-            dilation=2,
-            groups=out_channels,
-        )
-        self.pwconv2 = ConvBNAct(out_channels, out_channels, kernel_size=1, activation=False)
+        self.pwconv = ConvBNAct(in_channels, out_channels, kernel_size=1, activation=False)
         self.shortcut = (
             nn.Identity()
             if stride == 1 and in_channels == out_channels
@@ -58,12 +47,8 @@ class DEB(nn.Module):
                 f"DEB expected {self.in_channels} input channels, received {x.shape[1]}."
             )
 
-        residual = self.shortcut(x)
-        detail = self.dwconv1(x)
-        detail = self.pwconv1(detail)
-        detail = self.dwconv2(detail)
-        detail = self.pwconv2(detail)
-        detail = self.activation(detail + residual)
+        detail = self.pwconv(self.dwconv(x))
+        detail = self.activation(detail + self.shortcut(x))
 
         expected_hw = (x.shape[-2] // self.stride, x.shape[-1] // self.stride)
         if detail.shape[1] != self.out_channels or detail.shape[-2:] != expected_hw:
@@ -74,11 +59,12 @@ class DEB(nn.Module):
 class ADB(nn.Module):
     """Auxiliary Detail Branch.
 
-    The branch starts from the shared shallow feature S2 and only extends to 1/16
-    resolution to provide local-detail compensation.
+    The branch starts from the shared shallow feature S2 and only extends to
+    D3/D4 so it remains a lightweight local-detail compensator instead of a
+    second semantic backbone.
     """
 
-    def __init__(self, in_channels: int = 64, d3_channels: int = 256, d4_channels: int = 512) -> None:
+    def __init__(self, in_channels: int = 64, d3_channels: int = 128, d4_channels: int = 256) -> None:
         super().__init__()
         self.in_channels = in_channels
         self.deb3 = DEB(in_channels, d3_channels, stride=2)
@@ -91,6 +77,9 @@ class ADB(nn.Module):
             raise ValueError(
                 f"ADB expected {self.in_channels} input channels from S2, received {s2.shape[1]}."
             )
-        d3 = self.deb3(s2)  # [B, 256, H/2, W/2] relative to S2 => stride 8 from input.
-        d4 = self.deb4(d3)  # [B, 512, H/4, W/4] relative to S2 => stride 16 from input.
+
+        # D3 [B, 128, H/2, W/2] relative to S2 -> stride 8 from the image.
+        d3 = self.deb3(s2)
+        # D4 [B, 256, H/4, W/4] relative to S2 -> stride 16 from the image.
+        d4 = self.deb4(d3)
         return d3, d4

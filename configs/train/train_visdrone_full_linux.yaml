@@ -1,9 +1,9 @@
 model_config: configs/model/amfe_amf_yolo_visdrone.yaml
 data: configs/data/visdrone_linux.yaml
 training:
-  imgsz: 960
+  imgsz: 640
   epochs: 100
-  batch: 7
+  batch: 8
   workers: 8
   optimizer: SGD
   lr0: 0.01
@@ -22,3 +22,4 @@ training:
   name: visdrone_960_b8_amp
   exist_ok: false
   synthetic_smoke: false
+#  resume: /srv/amfe/runs/experiments/visdrone_960_b8_amp3/weights/last.pt

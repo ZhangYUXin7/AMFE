@@ -35,6 +35,35 @@ model = build_amfe_detector(num_classes=3)
 model = build_model_from_yaml("configs/model/amfe_amf_yolo.yaml")
 ```
 
+## MBFM Ablations
+
+The default lightweight fusion setting is kept in [`configs/model/amfe_amf_yolo.yaml`](/D:/code/AMFE/configs/model/amfe_amf_yolo.yaml) and [`configs/model/amfe_amf_yolo_visdrone.yaml`](/D:/code/AMFE/configs/model/amfe_amf_yolo_visdrone.yaml):
+
+- `mbfm_reduced_channels: [128, 256, 256]`
+- `mbfm_weighting_mode: softmax`
+- `mbfm_reconstruction_style: dw_pw`
+
+Committed ablation-ready model configs:
+
+- `configs/model/amfe_amf_yolo_mbfm_sigmoid.yaml`
+- `configs/model/amfe_amf_yolo_mbfm_pw_dw_pw.yaml`
+- `configs/model/amfe_amf_yolo_mbfm_shared192.yaml`
+- `configs/model/amfe_amf_yolo_visdrone_mbfm_sigmoid.yaml`
+- `configs/model/amfe_amf_yolo_visdrone_mbfm_pw_dw_pw.yaml`
+- `configs/model/amfe_amf_yolo_visdrone_mbfm_shared192.yaml`
+
+These isolate the three intended conservative ablations:
+
+- `softmax` vs `sigmoid` branch weighting
+- `dw_pw` vs `pw_dw_pw` lightweight reconstruction
+- per-level reduced channels vs shared reduced width
+
+Example:
+
+```bash
+.venv\Scripts\python.exe -c "from amfe.models import build_model_from_yaml; model = build_model_from_yaml('configs/model/amfe_amf_yolo_mbfm_sigmoid.yaml'); print(model.config)"
+```
+
 ## Feature hierarchy
 
 For an input tensor `[B, 3, 640, 640]` the detector follows:

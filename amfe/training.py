@@ -13,6 +13,7 @@ from ultralytics.nn.tasks import load_checkpoint
 from ultralytics.utils import LOGGER, RANK
 from ultralytics.utils.checks import check_file
 from ultralytics.utils.files import get_latest_run
+from ultralytics.utils.torch_utils import get_flops, get_num_params
 
 from amfe.models import AMFEYOLODetectionModel, build_model_from_config, load_yaml_config
 
@@ -38,6 +39,22 @@ def _format_epoch_summary(
     parts.append(f"loss={total_loss:.5f}")
     parts.extend(f"{name}={value:.5f}" for name, value in losses.items())
     return " | ".join(parts)
+
+
+def _compute_model_complexity(model: AMFEYOLODetectionModel, imgsz: int | list[int] | tuple[int, int]) -> dict[str, float | None]:
+    """Return model parameter count and FLOPs in training-friendly units."""
+
+    return {
+        "params_m": get_num_params(model) / 1e6,
+        "flops_g": float(get_flops(model, imgsz)),
+    }
+
+
+def _format_model_complexity_summary(*, params_m: float, flops_g: float | None) -> str:
+    """Build a compact one-line model complexity summary for terminal output."""
+
+    flops_text = f"{flops_g:.3f}" if flops_g is not None and flops_g > 0.0 else "n/a"
+    return f"Model complexity | params/M={params_m:.3f} | FLOPs/G={flops_text}"
 
 
 class AMFEDetectionTrainer(DetectionTrainer):
@@ -68,6 +85,8 @@ class AMFEDetectionTrainer(DetectionTrainer):
         trainer_cfg = DEFAULT_CFG if cfg is None else cfg
         super().__init__(cfg=trainer_cfg, overrides=overrides, _callbacks=_callbacks)
         self._epoch_start_time: float | None = None
+        self.model_complexity: dict[str, float | None] | None = None
+        self.add_callback("on_train_start", self._on_train_start)
         self.add_callback("on_train_epoch_start", self._on_train_epoch_start)
         self.add_callback("on_train_epoch_end", self._on_train_epoch_end)
 
@@ -176,6 +195,27 @@ class AMFEDetectionTrainer(DetectionTrainer):
         del trainer  # The callback is instance-scoped; the bound trainer is sufficient.
         self._epoch_start_time = time.perf_counter()
 
+    def _on_train_start(self, trainer: DetectionTrainer) -> None:
+        """Log parameter count and FLOPs once after the trainer has fully configured the model."""
+
+        del trainer  # The callback is instance-scoped; the bound trainer is sufficient.
+        if RANK not in {-1, 0}:
+            return
+
+        try:
+            if self.model_complexity is None:
+                self.model_complexity = _compute_model_complexity(self.model, self.args.imgsz)
+        except Exception as exc:
+            LOGGER.warning(f"Unable to compute model complexity summary: {exc}")
+            return
+
+        LOGGER.info(
+            _format_model_complexity_summary(
+                params_m=float(self.model_complexity["params_m"]),
+                flops_g=self.model_complexity["flops_g"],
+            )
+        )
+
     def _on_train_epoch_end(self, trainer: DetectionTrainer) -> None:
         """Emit a concise terminal summary for the completed epoch on the main process only."""
 
@@ -211,5 +251,9 @@ class AMFEDetectionTrainer(DetectionTrainer):
             for name, value in labeled_losses.items()
         }
 
-
-__all__ = ["AMFEDetectionTrainer", "_format_epoch_summary"]
+__all__ = [
+    "AMFEDetectionTrainer",
+    "_compute_model_complexity",
+    "_format_epoch_summary",
+    "_format_model_complexity_summary",
+]
