@@ -1,6 +1,8 @@
 # AMFE
 
-Conservative, research-oriented implementation of the **AMFE-Backbone + AMF-Neck + Ultralytics Detect head** detector described in `AMFE_AMF_Codex_Implementation_Spec.md`.
+Conservative, research-oriented implementation of the **current code-first AMFE detector**:
+
+**Input → DPSStem → MSB + ADB + LGCB → SRAFMBFM → AMFNeck (CAF + TDSF + BURF) → Ultralytics Detect head**
 
 ## Phase E status
 
@@ -35,43 +37,39 @@ model = build_amfe_detector(num_classes=3)
 model = build_model_from_yaml("configs/model/amfe_amf_yolo.yaml")
 ```
 
-## MBFM Ablations
+## Current backbone/neck structure (code truth)
 
-The default lightweight fusion setting is kept in [`configs/model/amfe_amf_yolo.yaml`](/D:/code/AMFE/configs/model/amfe_amf_yolo.yaml) and [`configs/model/amfe_amf_yolo_visdrone.yaml`](/D:/code/AMFE/configs/model/amfe_amf_yolo_visdrone.yaml):
+The repository currently uses the implemented modules and contracts in `amfe/models/backbone` and `amfe/models/neck.py`:
 
-- `mbfm_reduced_channels: [128, 256, 256]`
-- `mbfm_weighting_mode: softmax`
-- `mbfm_reconstruction_style: dw_pw`
-
-Committed ablation-ready model configs:
-
-- `configs/model/amfe_amf_yolo_mbfm_sigmoid.yaml`
-- `configs/model/amfe_amf_yolo_mbfm_pw_dw_pw.yaml`
-- `configs/model/amfe_amf_yolo_mbfm_shared192.yaml`
-- `configs/model/amfe_amf_yolo_visdrone_mbfm_sigmoid.yaml`
-- `configs/model/amfe_amf_yolo_visdrone_mbfm_pw_dw_pw.yaml`
-- `configs/model/amfe_amf_yolo_visdrone_mbfm_shared192.yaml`
-
-These isolate the three intended conservative ablations:
-
-- `softmax` vs `sigmoid` branch weighting
-- `dw_pw` vs `pw_dw_pw` lightweight reconstruction
-- per-level reduced channels vs shared reduced width
-
-Example:
-
-```bash
-.venv\Scripts\python.exe -c "from amfe.models import build_model_from_yaml; model = build_model_from_yaml('configs/model/amfe_amf_yolo_mbfm_sigmoid.yaml'); print(model.config)"
-```
+- `DPSStem`: output `S2` with shape `[B, 64, H/4, W/4]`
+- `MSB`: output semantic features
+  - `C3`: `[B, 256, H/8, W/8]`
+  - `C4`: `[B, 512, H/16, W/16]`
+  - `C5`: `[B, 512, H/32, W/32]`
+- `ADB`: output detail features
+  - `D3`: `[B, 128, H/8, W/8]`
+  - `D4`: `[B, 256, H/16, W/16]`
+- `LGCB`: output context features
+  - `G3`: `[B, 256, H/8, W/8]`
+  - `G4`: `[B, 256, H/16, W/16]`
+  - `G5`: `[B, 256, H/32, W/32]`
+- `SRAFMBFM`: fused backbone outputs
+  - `F3`: `[B, 256, H/8, W/8]`
+  - `F4`: `[B, 512, H/16, W/16]`
+  - `F5`: `[B, 512, H/32, W/32]`
+- `AMFNeck`: aligned/fused outputs
+  - `N3`: `[B, 256, H/8, W/8]`
+  - `N4`: `[B, 256, H/16, W/16]`
+  - `N5`: `[B, 256, H/32, W/32]`
 
 ## Feature hierarchy
 
 For an input tensor `[B, 3, 640, 640]` the detector follows:
 
 - Backbone outputs
-  - `F3`: `[B, 512, 80, 80]`
-  - `F4`: `[B, 1024, 40, 40]`
-  - `F5`: `[B, 2048, 20, 20]`
+  - `F3`: `[B, 256, 80, 80]`
+  - `F4`: `[B, 512, 40, 40]`
+  - `F5`: `[B, 512, 20, 20]`
 - Neck outputs
   - `N3`: `[B, 256, 80, 80]`
   - `N4`: `[B, 256, 40, 40]`
