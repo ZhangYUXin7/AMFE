@@ -1,4 +1,4 @@
-﻿"""Simple residual additive fusion modules for AMFE-Backbone."""
+"""Lightweight channel-gated fusion modules for AMFE-Backbone."""
 
 from __future__ import annotations
 
@@ -25,17 +25,40 @@ class CDG(nn.Module):
         return self.gate(torch.cat([semantic, detail, context], dim=1))
 
 
+class ChannelGate(nn.Module):
+    """Lightweight squeeze-style channel gate used by the upgraded MBFM."""
+
+    def __init__(self, channels: int, reduction: int = 8) -> None:
+        super().__init__()
+        if reduction < 1:
+            raise ValueError(f"ChannelGate reduction must be positive, received {reduction}.")
+        hidden_channels = max(channels // reduction, 1)
+        self.channels = channels
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.reduce = nn.Conv2d(channels, hidden_channels, kernel_size=1, bias=True)
+        self.activation = nn.SiLU(inplace=True)
+        self.expand = nn.Conv2d(hidden_channels, channels, kernel_size=1, bias=True)
+        self.output_activation = nn.Sigmoid()
+
+    def forward(self, x: Tensor) -> Tensor:
+        if x.ndim != 4:
+            raise ValueError(f"ChannelGate expects a 4D tensor [B, C, H, W], received {tuple(x.shape)}.")
+        if x.shape[1] != self.channels:
+            raise ValueError(f"ChannelGate expected {self.channels} channels, received {x.shape[1]}.")
+        return self.output_activation(self.expand(self.activation(self.reduce(self.pool(x)))))
+
+
 class SRAFMBFM(nn.Module):
-    """Simple Residual Additive Fusion MBFM.
+    """Semantic-anchor residual additive fusion with lightweight channel gating.
 
-    Fixed first-pass fusion equations:
-    - F3 = C3 + alpha3 * Align(D3) + beta3 * Align(G3)
-    - F4 = C4 + alpha4 * Align(D4) + beta4 * Align(G4)
-    - F5 = C5 + beta5 * Align(G5)
+    Updated fusion equations:
+    - F3 = DWConv(C3 + gate_d(Align(D3)) * Align(D3) + gate_g(Align(G3)) * Align(G3))
+    - F4 = DWConv(C4 + gate_d(Align(D4)) * Align(D4) + gate_g(Align(G4)) * Align(G4))
+    - F5 = DWConv(C5 + gate_g(Align(G5)) * Align(G5))
 
-    The residual weights are per-scale learnable scalars constrained with a
-    sigmoid. The fusion intentionally avoids concat-heavy fusion and extra 3x3
-    reconstruction convolutions.
+    The semantic branch remains the anchor. Detail and context branches only act
+    as lightweight residual compensations, avoiding concat-heavy fusion and
+    large post-fusion reconstruction stacks.
     """
 
     def __init__(
@@ -44,6 +67,8 @@ class SRAFMBFM(nn.Module):
         detail_channels: int | None,
         context_channels: int,
         out_channels: int,
+        *,
+        gate_reduction: int = 8,
     ) -> None:
         super().__init__()
         self.semantic_channels = semantic_channels
@@ -62,9 +87,18 @@ class SRAFMBFM(nn.Module):
             else None
         )
         self.context_align = ConvBNAct(context_channels, out_channels, kernel_size=1, activation=False)
-
-        self.alpha = nn.Parameter(torch.zeros(1)) if detail_channels is not None else None
-        self.beta = nn.Parameter(torch.zeros(1))
+        self.detail_gate = (
+            ChannelGate(out_channels, reduction=gate_reduction)
+            if detail_channels is not None
+            else None
+        )
+        self.context_gate = ChannelGate(out_channels, reduction=gate_reduction)
+        self.reconstruct = ConvBNAct(
+            out_channels,
+            out_channels,
+            kernel_size=3,
+            groups=out_channels,
+        )
 
     def forward(self, semantic: Tensor, detail: Tensor | None, context: Tensor) -> Tensor:
         if semantic.ndim != 4 or context.ndim != 4:
@@ -95,9 +129,14 @@ class SRAFMBFM(nn.Module):
                 )
             if detail.shape[-2:] != semantic.shape[-2:]:
                 raise ValueError("SRAFMBFM detail feature must align with the semantic spatial size.")
-            fused = fused + torch.sigmoid(self.alpha) * self.detail_align(detail)
+            aligned_detail = self.detail_align(detail)
+            if self.detail_gate is None:
+                raise AssertionError("detail_gate must exist when detail fusion is enabled.")
+            fused = fused + self.detail_gate(aligned_detail) * aligned_detail
 
-        fused = fused + torch.sigmoid(self.beta) * self.context_align(context)
+        aligned_context = self.context_align(context)
+        fused = fused + self.context_gate(aligned_context) * aligned_context
+        fused = self.reconstruct(fused)
         if fused.shape != (semantic.shape[0], self.out_channels, *semantic.shape[-2:]):
             raise AssertionError("SRAFMBFM output does not match the configured semantic anchor contract.")
         return fused

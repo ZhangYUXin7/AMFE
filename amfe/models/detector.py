@@ -37,6 +37,11 @@ class AMFEModelConfig:
     in_channels: int = 3
     neck_channels: int = 256
     msb_variant: str = "yolov8_s"
+    lem_channels: int = 32
+    mbfm_gate_reduction: int = 8
+    tdsf_spg_reduction: int = 8
+    tdsf_dpg_kernels: tuple[int, int, int] = (3, 5, 7)
+    detect_feature_strides: tuple[int, int, int, int] = (4, 8, 16, 32)
     stride_init_image_size: int = 256
     loss_hyperparameters: LossHyperparameters = LossHyperparameters()
 
@@ -47,11 +52,30 @@ class AMFEModelConfig:
         loss_values = values.get("loss_hyperparameters", {})
         if not isinstance(loss_values, dict):
             raise TypeError("loss_hyperparameters must be a mapping when provided.")
+        dpg_kernels = values.get("tdsf_dpg_kernels", cls.tdsf_dpg_kernels)
+        if isinstance(dpg_kernels, list):
+            dpg_kernels = tuple(int(kernel) for kernel in dpg_kernels)
+        elif isinstance(dpg_kernels, tuple):
+            dpg_kernels = tuple(int(kernel) for kernel in dpg_kernels)
+        if not isinstance(dpg_kernels, tuple) or len(dpg_kernels) != 3:
+            raise TypeError("tdsf_dpg_kernels must be a three-item list or tuple of integers.")
+        detect_feature_strides = values.get("detect_feature_strides", cls.detect_feature_strides)
+        if isinstance(detect_feature_strides, list):
+            detect_feature_strides = tuple(int(stride) for stride in detect_feature_strides)
+        elif isinstance(detect_feature_strides, tuple):
+            detect_feature_strides = tuple(int(stride) for stride in detect_feature_strides)
+        if not isinstance(detect_feature_strides, tuple) or len(detect_feature_strides) != 4:
+            raise TypeError("detect_feature_strides must be a four-item list or tuple of integers.")
         return cls(
             num_classes=int(values.get("num_classes", cls.num_classes)),
             in_channels=int(values.get("in_channels", cls.in_channels)),
             neck_channels=int(values.get("neck_channels", cls.neck_channels)),
             msb_variant=str(values.get("msb_variant", cls.msb_variant)),
+            lem_channels=int(values.get("lem_channels", cls.lem_channels)),
+            mbfm_gate_reduction=int(values.get("mbfm_gate_reduction", cls.mbfm_gate_reduction)),
+            tdsf_spg_reduction=int(values.get("tdsf_spg_reduction", cls.tdsf_spg_reduction)),
+            tdsf_dpg_kernels=dpg_kernels,
+            detect_feature_strides=detect_feature_strides,
             stride_init_image_size=int(values.get("stride_init_image_size", cls.stride_init_image_size)),
             loss_hyperparameters=LossHyperparameters(
                 box=float(loss_values.get("box", LossHyperparameters.box)),
@@ -71,16 +95,21 @@ class AMFEYOLODetectionModel(nn.Module):
         self.backbone = AMFEBackbone(
             in_channels=config.in_channels,
             msb_variant=config.msb_variant,
+            lem_channels=config.lem_channels,
+            mbfm_gate_reduction=config.mbfm_gate_reduction,
         )
         self.neck = AMFNeck(
             in_channels=(
+                self.backbone.output_channels.f2,
                 self.backbone.output_channels.f3,
                 self.backbone.output_channels.f4,
                 self.backbone.output_channels.f5,
             ),
             out_channels=config.neck_channels,
+            spg_reduction=config.tdsf_spg_reduction,
+            dpg_kernels=config.tdsf_dpg_kernels,
         )
-        self.detect = Detect(nc=config.num_classes, ch=(config.neck_channels,) * 3)
+        self.detect = Detect(nc=config.num_classes, ch=(config.neck_channels,) * 4)
         self.model = nn.ModuleList([self.backbone, self.neck, self.detect])
         self.args = SimpleNamespace(
             box=config.loss_hyperparameters.box,
@@ -94,6 +123,11 @@ class AMFEYOLODetectionModel(nn.Module):
             "in_channels": config.in_channels,
             "neck_channels": config.neck_channels,
             "msb_variant": config.msb_variant,
+            "lem_channels": config.lem_channels,
+            "mbfm_gate_reduction": config.mbfm_gate_reduction,
+            "tdsf_spg_reduction": config.tdsf_spg_reduction,
+            "tdsf_dpg_kernels": list(config.tdsf_dpg_kernels),
+            "detect_feature_strides": list(config.detect_feature_strides),
             "stride_init_image_size": config.stride_init_image_size,
             "loss_hyperparameters": {
                 "box": config.loss_hyperparameters.box,
@@ -110,9 +144,11 @@ class AMFEYOLODetectionModel(nn.Module):
         """Infer Detect strides from a dummy feature pass and initialize head biases."""
 
         image_size = self.config.stride_init_image_size
-        if image_size % 32 != 0:
+        max_stride = max(self.config.detect_feature_strides)
+        if image_size % max_stride != 0:
             raise ValueError(
-                "stride_init_image_size must be divisible by 32 so the backbone stride contract remains valid."
+                "stride_init_image_size must be divisible by the deepest detection stride so the backbone "
+                "stride contract remains valid."
             )
 
         was_training = self.training
@@ -125,14 +161,24 @@ class AMFEYOLODetectionModel(nn.Module):
             dtype=features[0].dtype,
             device=features[0].device,
         )
+        expected_stride = torch.tensor(
+            self.config.detect_feature_strides,
+            dtype=features[0].dtype,
+            device=features[0].device,
+        )
+        if not torch.equal(stride, expected_stride):
+            raise AssertionError(
+                f"Detect stride mismatch: expected {tuple(expected_stride.tolist())}, "
+                f"received {tuple(stride.tolist())}."
+            )
         self.detect.stride = stride
         self.detect.bias_init()
         if was_training:
             self.train()
         return stride
 
-    def forward_features(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        """Return N3/N4/N5 features before the Detect head."""
+    def forward_features(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Return N2/N3/N4/N5 features before the Detect head."""
 
         return self.neck(self.backbone(x))
 
@@ -219,6 +265,11 @@ def build_amfe_detector(
     *,
     neck_channels: int = 256,
     msb_variant: str = "yolov8_s",
+    lem_channels: int = 32,
+    mbfm_gate_reduction: int = 8,
+    tdsf_spg_reduction: int = 8,
+    tdsf_dpg_kernels: tuple[int, int, int] = (3, 5, 7),
+    detect_feature_strides: tuple[int, int, int, int] = (4, 8, 16, 32),
 ) -> AMFEYOLODetectionModel:
     """Build an integrated AMFE detector with explicit configuration wiring."""
 
@@ -228,5 +279,10 @@ def build_amfe_detector(
             in_channels=in_channels,
             neck_channels=neck_channels,
             msb_variant=msb_variant,
+            lem_channels=lem_channels,
+            mbfm_gate_reduction=mbfm_gate_reduction,
+            tdsf_spg_reduction=tdsf_spg_reduction,
+            tdsf_dpg_kernels=tdsf_dpg_kernels,
+            detect_feature_strides=detect_feature_strides,
         )
     )

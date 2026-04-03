@@ -1,20 +1,35 @@
-# AMFE
+﻿# AMFE
 
-Conservative, research-oriented implementation of the **current code-first AMFE detector**:
+面向研究实验的保守实现版 AMFE 检测器，当前代码已经完成四尺度检测主链：
 
-**Input → DPSStem → MSB + ADB + LGCB → SRAFMBFM → AMFNeck (CAF + TDSF + BURF) → Ultralytics Detect head**
+- Backbone：`LEM -> DPSStem -> F2 分支 + MSB + ADB + LGCB + SRAFMBFM`
+- Neck：`CAF + TDSF + BURF`
+- Head：Ultralytics `Detect`
+- 检测尺度：`N2 / N3 / N4 / N5`
+- Detect strides：`[4, 8, 16, 32]`
 
-## Phase E status
+当前仓库强调：
+- 代码可运行
+- shape 合同明确
+- 可接入 Ultralytics 训练 / loss / validator 主链
+- 本地数据集路径显式、可验证
+- 测试覆盖 synthetic smoke path
 
-The repository now supports two validated paths:
+## 当前状态
+仓库当前支持两类验证路径：
 
-- Phase D synthetic smoke validation for model/loss/backward wiring.
-- Phase E local real-data integration for the existing VisDrone YOLO dataset under `true_datasets/visdrone_yolo`.
+1. Synthetic smoke path
+- 用随机张量完成模型构建、forward、loss、backward 和一步 optimizer step
+- 适合快速验证模型结构和训练主链是否连通
 
-Phase E does **not** claim that the full formal experiment is complete. It only establishes that the local dataset is recognized correctly, the training pipeline can run end to end on real data, validation can run on the `val` split, and logs/checkpoints are produced.
+2. 本地真实数据路径
+- 通过项目内工具校验本地 YOLO 数据集
+- 通过项目内 trainer bridge 启动 Ultralytics 训练流程
+- 当前仓库内置了本地 VisDrone YOLO 数据的 smoke config
 
-## Installation
+注意：当前仓库实现的是四尺度版本，不再是旧文档中的三尺度 `F3/F4/F5 -> N3/N4/N5`。
 
+## 安装
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
@@ -23,81 +38,171 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### Why `opencv-python-headless`?
+## 为什么使用 `opencv-python-headless`
+部分无界面环境会因为缺少 GUI 依赖而无法导入标准 OpenCV。仓库当前优先使用 `opencv-python-headless`。此外，`amfe/ultralytics_compat.py` 还提供了一个极小的 `cv2` fallback stub，用于依赖受限环境下的 smoke test。
 
-Some headless environments cannot import the regular OpenCV wheel because `libGL.so.1` is missing. This repository therefore depends on `opencv-python-headless` and also ships a tiny fallback compatibility shim so module-level smoke tests can still import Ultralytics in dependency-limited environments.
-
-## Model instantiation
-
+## 模型构建方式
 ```python
 from amfe.models import build_amfe_detector, build_model_from_yaml
 
 model = build_amfe_detector(num_classes=3)
-# or
+# 或
 model = build_model_from_yaml("configs/model/amfe_amf_yolo.yaml")
 ```
 
-## Current backbone/neck structure (code truth)
+## 当前模型结构
 
-The repository currently uses the implemented modules and contracts in `amfe/models/backbone` and `amfe/models/neck.py`:
+### Backbone
+当前 backbone 由以下模块组成：
 
-- `DPSStem`: output `S2` with shape `[B, 64, H/4, W/4]`
-- `MSB`: output semantic features
-  - `C3`: `[B, 256, H/8, W/8]`
-  - `C4`: `[B, 512, H/16, W/16]`
-  - `C5`: `[B, 512, H/32, W/32]`
-- `ADB`: output detail features
-  - `D3`: `[B, 128, H/8, W/8]`
-  - `D4`: `[B, 256, H/16, W/16]`
-- `LGCB`: output context features
-  - `G3`: `[B, 256, H/8, W/8]`
-  - `G4`: `[B, 256, H/16, W/16]`
-  - `G5`: `[B, 256, H/32, W/32]`
-- `SRAFMBFM`: fused backbone outputs
-  - `F3`: `[B, 256, H/8, W/8]`
-  - `F4`: `[B, 512, H/16, W/16]`
-  - `F5`: `[B, 512, H/32, W/32]`
-- `AMFNeck`: aligned/fused outputs
-  - `N3`: `[B, 256, H/8, W/8]`
-  - `N4`: `[B, 256, H/16, W/16]`
-  - `N5`: `[B, 256, H/32, W/32]`
+- `LEM`
+  - 输出：`[B, 32, H, W]`
+- `DPSStem`
+  - 输出共享浅层特征 `S2`：`[B, 64, H/4, W/4]`
+- 独立 `F2` 分支
+  - `Conv1x1(64 -> 256) + DWConv3x3(256 -> 256)`
+  - 输出 `F2`：`[B, 256, H/4, W/4]`
+- `MSB`
+  - 输出：
+    - `C3`：`[B, 256, H/8, W/8]`
+    - `C4`：`[B, 512, H/16, W/16]`
+    - `C5`：`[B, 512, H/32, W/32]`
+- `ADB`
+  - 输出：
+    - `D3`：`[B, 128, H/8, W/8]`
+    - `D4`：`[B, 256, H/16, W/16]`
+- `LGCB`
+  - 输出：
+    - `G3`：`[B, 256, H/8, W/8]`
+    - `G4`：`[B, 256, H/16, W/16]`
+    - `G5`：`[B, 256, H/32, W/32]`
+- `SRAFMBFM`
+  - 输出：
+    - `F3`：`[B, 256, H/8, W/8]`
+    - `F4`：`[B, 512, H/16, W/16]`
+    - `F5`：`[B, 512, H/32, W/32]`
 
-## Feature hierarchy
+Backbone 输出顺序固定为：
+- `F2, F3, F4, F5`
 
-For an input tensor `[B, 3, 640, 640]` the detector follows:
+### Neck
+当前 neck 输入是四尺度特征：
+- `F2, F3, F4, F5`
 
-- Backbone outputs
-  - `F3`: `[B, 256, 80, 80]`
-  - `F4`: `[B, 512, 40, 40]`
-  - `F5`: `[B, 512, 20, 20]`
-- Neck outputs
-  - `N3`: `[B, 256, 80, 80]`
-  - `N4`: `[B, 256, 40, 40]`
-  - `N5`: `[B, 256, 20, 20]`
-- Detect head input
-  - `N3 / N4 / N5`
+主要步骤：
+- `CAF`：先把各层对齐到 `256` 通道
+- `TDSF`：执行自顶向下选择性融合
+- `BURF`：执行自底向上 refinement
 
-## Synthetic smoke path
+Neck 输出顺序固定为：
+- `N2, N3, N4, N5`
 
-Run a full build/forward/loss/backward/step smoke test with synthetic tensors:
+输出合同：
+- `N2`：`[B, 256, H/4, W/4]`
+- `N3`：`[B, 256, H/8, W/8]`
+- `N4`：`[B, 256, H/16, W/16]`
+- `N5`：`[B, 256, H/32, W/32]`
 
+### Detect Head
+当前 head 直接复用 Ultralytics `Detect`：
+- 输入：`N2, N3, N4, N5`
+- 每层输入通道：`256`
+- strides：`[4, 8, 16, 32]`
+- loss：Ultralytics `v8DetectionLoss`
+
+## 关键 Shape 合同
+对输入 `[B, 3, 640, 640]`，当前实现应满足：
+
+### Backbone outputs
+- `F2`：`[B, 256, 160, 160]`
+- `F3`：`[B, 256, 80, 80]`
+- `F4`：`[B, 512, 40, 40]`
+- `F5`：`[B, 512, 20, 20]`
+
+### Neck outputs
+- `N2`：`[B, 256, 160, 160]`
+- `N3`：`[B, 256, 80, 80]`
+- `N4`：`[B, 256, 40, 40]`
+- `N5`：`[B, 256, 20, 20]`
+
+### Detect strides
+- `[4, 8, 16, 32]`
+
+## 主要代码入口
+
+### 模型相关
+- `amfe/models/backbone/amfe_backbone.py`
+- `amfe/models/neck.py`
+- `amfe/models/detector.py`
+- `amfe/models/registry.py`
+
+### 训练相关
+- `amfe/training.py`
+- `tools/train.py`
+
+### 数据相关
+- `amfe/data/local_dataset.py`
+- `amfe/data/visdrone_conversion.py`
+- `tools/validate_dataset.py`
+
+## 配置说明
+
+### 模型配置
+模型配置位于 `configs/model/`，当前重点字段包括：
+- `num_classes`
+- `in_channels`
+- `neck_channels`
+- `msb_variant`
+- `lem_channels`
+- `mbfm_gate_reduction`
+- `tdsf_spg_reduction`
+- `tdsf_dpg_kernels`
+- `detect_feature_strides`
+- `stride_init_image_size`
+- `loss_hyperparameters`
+
+默认模型配置：
+- [`configs/model/amfe_amf_yolo.yaml`](D:/code/AMFE/configs/model/amfe_amf_yolo.yaml)
+
+VisDrone 10 类配置：
+- [`configs/model/amfe_amf_yolo_visdrone.yaml`](D:/code/AMFE/configs/model/amfe_amf_yolo_visdrone.yaml)
+
+### 训练配置
+训练启动配置位于 `configs/train/`：
+- `train_default.yaml`：默认训练配置
+- `train_visdrone_smoke.yaml`：本地 VisDrone smoke run
+- `train_visdrone_full.yaml`：更长周期训练配置
+
+### 数据配置
+数据配置位于 `configs/data/`：
+- `visdrone_local.yaml`：本地 VisDrone YOLO 数据路径
+- `dataset_example.yaml`：示例数据配置
+
+## 常用命令
+
+### 1. 运行 synthetic smoke
 ```bash
 .venv\Scripts\python.exe tools/train.py --config configs/train/train_default.yaml --synthetic-smoke
 ```
 
-This remains the fastest conservative check for model construction, stride initialization, Ultralytics loss reuse, backward propagation, and a single optimizer step.
+### 2. 仅校验本地数据集
+```bash
+.venv\Scripts\python.exe tools/validate_dataset.py --data configs/data/visdrone_local.yaml --model-config configs/model/amfe_amf_yolo_visdrone.yaml
+```
 
-## Local real-data path
+### 3. 启动本地 VisDrone smoke training
+```bash
+.venv\Scripts\python.exe tools/train.py --config configs/train/train_visdrone_smoke.yaml
+```
 
-### Expected dataset
+## 本地数据路径说明
+当前仓库的本地 VisDrone YOLO 数据配置在：
+- [`configs/data/visdrone_local.yaml`](D:/code/AMFE/configs/data/visdrone_local.yaml)
 
-Phase E assumes the local VisDrone YOLO dataset already exists at:
+默认期望数据集根目录：
+- `D:/code/AMFE/true_datasets/visdrone_yolo`
 
-- Absolute path: `D:\code\AMFE\true_datasets\visdrone_yolo`
-- Repo-relative path: `true_datasets/visdrone_yolo`
-
-Expected layout:
-
+典型结构：
 ```text
 true_datasets/visdrone_yolo/
 ├─ dataset.yaml
@@ -109,67 +214,35 @@ true_datasets/visdrone_yolo/
    └─ val/
 ```
 
-The tracked project-local config for this dataset is [`configs/data/visdrone_local.yaml`](/D:/code/AMFE/configs/data/visdrone_local.yaml), and the matching 10-class model config is [`configs/model/amfe_amf_yolo_visdrone.yaml`](/D:/code/AMFE/configs/model/amfe_amf_yolo_visdrone.yaml).
-
-### Validate the dataset
-
-Before training, validate the local dataset config and label structure:
-
+## 测试
+运行核心测试：
 ```bash
-.venv\Scripts\python.exe tools/validate_dataset.py --data configs/data/visdrone_local.yaml --model-config configs/model/amfe_amf_yolo_visdrone.yaml
+.venv\Scripts\python.exe -m pytest tests/test_backbone.py tests/test_neck.py tests/test_detector.py
 ```
 
-This checks:
+当前测试覆盖：
+- backbone 子模块 forward
+- `F2` 独立分支 forward
+- backbone 四尺度输出合同
+- neck 四输入四输出合同
+- detector forward smoke
+- detector strides 校验
+- synthetic loss / backward / optimizer step
+- YAML 构建测试
 
-- dataset root and split directories exist
-- `train` and `val` paths resolve correctly
-- image and label stems match
-- class ids are contiguous and start at `0`
-- every label row is `class x_center y_center width height`
-- coordinates are normalized
-- the AMFE model config `num_classes` and `in_channels` match the dataset config
+## 开发注意事项
+- 当前代码事实优先于旧设计文档
+- 当前实现是四尺度，不是三尺度
+- `F2` 是独立浅层检测分支，不并入 `MBFM`
+- `MSB` 当前是 YOLO 风格实现，不是 ResNet50
+- 任何结构变更都应同步更新：
+  - `amfe/models/backbone/amfe_backbone.py`
+  - `amfe/models/neck.py`
+  - `amfe/models/detector.py`
+  - `configs/model/*.yaml`
+  - `tests/test_backbone.py`
+  - `tests/test_neck.py`
+  - `tests/test_detector.py`
 
-### Run the real-data smoke training job
-
-The committed Phase E smoke-training config is [`configs/train/train_visdrone_smoke.yaml`](/D:/code/AMFE/configs/train/train_visdrone_smoke.yaml). It uses:
-
-- the full local dataset as-is
-- `epochs: 1`
-- `imgsz: 320`
-- `batch: 2`
-- `workers: 0`
-- `amp: false` to keep the default smoke path free of Ultralytics AMP self-check downloads
-- validation enabled
-
-Run it with:
-
-```bash
-.venv\Scripts\python.exe tools/train.py --config configs/train/train_visdrone_smoke.yaml
-```
-
-Artifacts are written under `runs/phase_e/visdrone_smoke/` and include:
-
-- `args.yaml`
-- `results.csv`
-- `weights/last.pt`
-- `weights/best.pt`
-- Ultralytics training logs for the smoke run
-
-## Switching to a larger dataset later
-
-Phase E keeps the real-data path explicit rather than hardcoding conversion logic into training:
-
-1. Prepare a YOLO detect dataset root with `images/{train,val}` and `labels/{train,val}`.
-2. Create or update a project-local data config like [`configs/data/visdrone_local.yaml`](/D:/code/AMFE/configs/data/visdrone_local.yaml).
-3. Make the AMFE model config `num_classes` match the dataset `nc`.
-4. Duplicate and tune [`configs/train/train_visdrone_smoke.yaml`](/D:/code/AMFE/configs/train/train_visdrone_smoke.yaml) for longer runs.
-
-## Testing
-
-Run the test suite with:
-
-```bash
-.venv\Scripts\python.exe -m pytest
-```
-
-The core module tests remain synthetic. Phase E also adds dataset-config and local real-dataset integration checks that skip cleanly if the local VisDrone dataset is not present in the current workspace.
+## 说明
+如果后续模型结构、训练路径或数据路径发生明显变化，请同步更新 README 和 AGENTS.md，保证文档描述的是当前仓库里真正存在并能运行的代码。

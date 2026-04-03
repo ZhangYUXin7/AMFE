@@ -13,6 +13,8 @@ class DEB(nn.Module):
     Fixed structure:
     - DWConv 3x3, stride=s
     - PWConv 1x1 to the target width
+    - DWConv 3x3, stride=1, dilation=2
+    - PWConv 1x1 to the target width
     - Residual projection when shape changes
     - SiLU activation after residual addition
     """
@@ -24,14 +26,23 @@ class DEB(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.stride = stride
-        self.dwconv = ConvBNAct(
+        self.dwconv1 = ConvBNAct(
             in_channels,
             in_channels,
             kernel_size=3,
             stride=stride,
             groups=in_channels,
         )
-        self.pwconv = ConvBNAct(in_channels, out_channels, kernel_size=1, activation=False)
+        self.pwconv1 = ConvBNAct(in_channels, out_channels, kernel_size=1)
+        self.dwconv2 = ConvBNAct(
+            out_channels,
+            out_channels,
+            kernel_size=3,
+            stride=1,
+            groups=out_channels,
+            dilation=2,
+        )
+        self.pwconv2 = ConvBNAct(out_channels, out_channels, kernel_size=1, activation=False)
         self.shortcut = (
             nn.Identity()
             if stride == 1 and in_channels == out_channels
@@ -47,8 +58,15 @@ class DEB(nn.Module):
                 f"DEB expected {self.in_channels} input channels, received {x.shape[1]}."
             )
 
-        detail = self.pwconv(self.dwconv(x))
-        detail = self.activation(detail + self.shortcut(x))
+        detail = self.pwconv1(self.dwconv1(x))
+        detail = self.pwconv2(self.dwconv2(detail))
+        shortcut = self.shortcut(x)
+        if detail.shape != shortcut.shape:
+            raise AssertionError(
+                "DEB residual branches must be shape-aligned before addition, "
+                f"received main={tuple(detail.shape)} and shortcut={tuple(shortcut.shape)}."
+            )
+        detail = self.activation(detail + shortcut)
 
         expected_hw = (x.shape[-2] // self.stride, x.shape[-1] // self.stride)
         if detail.shape[1] != self.out_channels or detail.shape[-2:] != expected_hw:

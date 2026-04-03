@@ -10,7 +10,7 @@ from ..common import ConvBNAct
 class DPSStem(nn.Module):
     """WIP-DPS Stem.
 
-    Fixed 640-input shape trace:
+    Fixed 640-input shape trace after LEM:
     - Input: [B, Cin, 640, 640]
     - Conv 3x3, s=2, c=32 -> [B, 32, 320, 320]
     - DWConv 3x3, s=1, c=32 -> [B, 32, 320, 320]
@@ -22,7 +22,7 @@ class DPSStem(nn.Module):
     small-object cues are less likely to be destroyed before the semantic trunk.
     """
 
-    def __init__(self, in_channels: int = 3, out_channels: int = 64, stem_channels: int = 32) -> None:
+    def __init__(self, in_channels: int = 32, out_channels: int = 64, stem_channels: int = 32) -> None:
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels

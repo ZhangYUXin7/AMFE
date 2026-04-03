@@ -5,20 +5,41 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from amfe.models.backbone import ADB, AMFEBackbone, DEB, DPSStem, LGCB, MBFM, MSB, SRAFMBFM
+from amfe.models.backbone import ADB, AMFEBackbone, DEB, DPSStem, LEM, LGCB, MBFM, MSB, SRAFMBFM
+
+
+@torch.no_grad()
+def test_lem_output_shape() -> None:
+    module = LEM(in_channels=3, out_channels=32).eval()
+    outputs = module(torch.randn(2, 3, 640, 640))
+    assert outputs.shape == (2, 32, 640, 640)
 
 
 @torch.no_grad()
 def test_dps_stem_output_shape() -> None:
-    module = DPSStem(in_channels=3, out_channels=64).eval()
-    outputs = module(torch.randn(2, 3, 640, 640))
+    module = DPSStem(in_channels=32, out_channels=64, stem_channels=32).eval()
+    outputs = module(torch.randn(2, 32, 640, 640))
     assert outputs.shape == (2, 64, 160, 160)
+
+
+@torch.no_grad()
+def test_amfe_backbone_f2_branch_output_shape() -> None:
+    model = AMFEBackbone().eval()
+    outputs = model.f2_branch(torch.randn(2, 64, 160, 160))
+    assert outputs.shape == (2, 256, 160, 160)
 
 
 @torch.no_grad()
 def test_deb_output_shape() -> None:
     module = DEB(in_channels=64, out_channels=128, stride=2).eval()
     outputs = module(torch.randn(2, 64, 160, 160))
+    assert outputs.shape == (2, 128, 80, 80)
+
+
+@torch.no_grad()
+def test_deb_stride1_output_shape() -> None:
+    module = DEB(in_channels=128, out_channels=128, stride=1).eval()
+    outputs = module(torch.randn(2, 128, 80, 80))
     assert outputs.shape == (2, 128, 80, 80)
 
 
@@ -95,13 +116,16 @@ def test_amfe_backbone_output_shapes_and_shape_trace() -> None:
     model = AMFEBackbone().eval()
     inputs = torch.randn(1, 3, 640, 640)
 
-    f3, f4, f5 = model(inputs)
+    f2, f3, f4, f5 = model(inputs)
 
+    assert f2.shape == (1, 256, 160, 160)
     assert f3.shape == (1, 256, 80, 80)
     assert f4.shape == (1, 512, 40, 40)
     assert f5.shape == (1, 512, 20, 20)
     assert model.last_forward_shapes == {
+        "LEM": (1, 32, 640, 640),
         "S2": (1, 64, 160, 160),
+        "F2": (1, 256, 160, 160),
         "C3": (1, 256, 80, 80),
         "C4": (1, 512, 40, 40),
         "C5": (1, 512, 20, 20),

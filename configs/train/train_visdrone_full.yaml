@@ -2,8 +2,8 @@ model_config: configs/model/amfe_amf_yolo_visdrone.yaml
 data: configs/data/visdrone_local.yaml
 training:
   imgsz: 640
-  epochs: 100
-  batch: 8
+  epochs: 200
+  batch: 6
   workers: 4
   optimizer: SGD
   lr0: 0.01
@@ -19,7 +19,7 @@ training:
   deterministic: true
   verbose: true
   project: runs/experiments
-  name: visdrone_yolo_backbone
+  name: visdrone_LEM_SRAFMBFM_F2
   exist_ok: true
   synthetic_smoke: false
-  resume: D:/code/AMFE/runs/experiments/visdrone_yolo_backbone/weights/last.pt
+#  resume: D:/code/AMFE/runs/experiments/visdrone_LEM_SRAFMBFM/weights/last.pt

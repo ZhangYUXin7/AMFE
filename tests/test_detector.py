@@ -27,20 +27,23 @@ def test_amfe_detector_forward_smoke() -> None:
     assert isinstance(outputs, dict)
     assert set(outputs.keys()) == {"boxes", "scores", "feats"}
     assert outputs["scores"].shape[1] == 5
-    assert len(outputs["feats"]) == 3
+    assert len(outputs["feats"]) == 4
 
 
 @torch.no_grad()
 def test_amfe_detector_feature_shapes_and_backbone_trace() -> None:
     model = AMFEYOLODetectionModel(AMFEModelConfig(num_classes=3))
-    n3, n4, n5 = model.forward_features(torch.randn(1, 3, 128, 128))
+    n2, n3, n4, n5 = model.forward_features(torch.randn(1, 3, 128, 128))
 
+    assert n2.shape == (1, 256, 32, 32)
     assert n3.shape == (1, 256, 16, 16)
     assert n4.shape == (1, 256, 8, 8)
     assert n5.shape == (1, 256, 4, 4)
-    assert tuple(model.stride.tolist()) == (8.0, 16.0, 32.0)
+    assert tuple(model.stride.tolist()) == (4.0, 8.0, 16.0, 32.0)
     assert model.backbone.last_forward_shapes == {
+        "LEM": (1, 32, 128, 128),
         "S2": (1, 64, 32, 32),
+        "F2": (1, 256, 32, 32),
         "C3": (1, 256, 16, 16),
         "C4": (1, 512, 8, 8),
         "C5": (1, 512, 4, 4),
@@ -83,7 +86,13 @@ def test_build_model_from_yaml() -> None:
 
     assert isinstance(outputs, dict)
     assert model.config.msb_variant == "yolov8_s"
+    assert model.config.lem_channels == 32
+    assert model.config.mbfm_gate_reduction == 8
+    assert model.config.tdsf_spg_reduction == 8
+    assert model.config.tdsf_dpg_kernels == (3, 5, 7)
+    assert model.config.detect_feature_strides == (4, 8, 16, 32)
     assert model.config.neck_channels == 256
+    assert model.backbone.output_channels.f2 == 256
     assert model.backbone.output_channels.f3 == 256
     assert model.backbone.output_channels.f4 == 512
     assert model.backbone.output_channels.f5 == 512
@@ -97,4 +106,6 @@ def test_build_visdrone_model_from_yaml() -> None:
 
     assert isinstance(outputs, dict)
     assert model.config.num_classes == 10
+    assert model.config.lem_channels == 32
     assert model.config.neck_channels == 256
+    assert model.config.detect_feature_strides == (4, 8, 16, 32)
