@@ -1,9 +1,4 @@
-"""Phase A AMF-Neck scaffolding.
-
-The neck keeps channel alignment, top-down selective fusion, and bottom-up
-refinement as separate modules so later phases can increase fidelity without
-rewiring the model interface.
-"""
+"""AMF neck modules for the migrated 3-scale detector."""
 
 from __future__ import annotations
 
@@ -22,11 +17,10 @@ class NeckOutputChannels:
     n2: int = 256
     n3: int = 256
     n4: int = 256
-    n5: int = 256
 
 
 class CAF(nn.Module):
-    """Channel Alignment Fusion block that normalizes F2/F3/F4/F5 to 256 channels."""
+    """Channel Alignment Fusion block that normalizes F2/F3/F4e to a common width."""
 
     def __init__(self, in_channels: int, out_channels: int = 256) -> None:
         super().__init__()
@@ -132,34 +126,37 @@ class BURF(nn.Module):
 
     def __init__(self, channels: int = 256) -> None:
         super().__init__()
+        self.channels = channels
         self.downsample = ConvBNAct(channels, channels, kernel_size=3, stride=2)
+        self.spatial_gate = DPG(channels)
+        self.channel_gate = SPG(channels)
         self.refine = ConvBNAct(channels, channels, kernel_size=3)
 
     def forward(self, lower: Tensor, higher: Tensor) -> Tensor:
+        ensure_feature_channels(lower, expected_channels=self.channels, name="BURF lower")
+        ensure_feature_channels(higher, expected_channels=self.channels, name="BURF higher")
         lower_down = self.downsample(lower)
         if lower_down.shape[-2:] != higher.shape[-2:]:
             raise ValueError("BURF expects aligned refinement features after downsampling.")
-        return self.refine(lower_down + higher)
+        spatial_prior = self.spatial_gate(lower_down)
+        channel_prior = self.channel_gate(higher)
+        lower_refined = lower_down * spatial_prior
+        higher_refined = higher * channel_prior
+        return self.refine(lower_refined + higher_refined)
 
 
 class AMFNeck(nn.Module):
-    """Conservative AMF-Neck scaffold.
+    """Three-scale AMF neck.
 
-    Input feature order is explicit and fixed: (F2, F3, F4, F5).
-    Output feature order is explicit and fixed: (N2, N3, N4, N5).
-
-    Current backbone contract before the neck:
-    - F2: [B, 256, H/4, W/4]
-    - F3: [B, 256, H/8, W/8]
-    - F4: [B, 512, H/16, W/16]
-    - F5: [B, 512, H/32, W/32]
+    Input feature order is explicit and fixed: ``(F2, F3, F4e)``.
+    Output feature order is explicit and fixed: ``(N2, N3, N4)``.
     """
 
     output_channels = NeckOutputChannels()
 
     def __init__(
         self,
-        in_channels: tuple[int, int, int, int] = (256, 256, 512, 512),
+        in_channels: tuple[int, int, int] = (256, 256, 512),
         out_channels: int = 256,
         *,
         spg_reduction: int = 8,
@@ -170,12 +167,6 @@ class AMFNeck(nn.Module):
         self.caf2 = CAF(in_channels[0], out_channels=out_channels)
         self.caf3 = CAF(in_channels[1], out_channels=out_channels)
         self.caf4 = CAF(in_channels[2], out_channels=out_channels)
-        self.caf5 = CAF(in_channels[3], out_channels=out_channels)
-        self.tdsf4 = TDSF(
-            channels=out_channels,
-            spg_reduction=spg_reduction,
-            dpg_kernels=dpg_kernels,
-        )
         self.tdsf3 = TDSF(
             channels=out_channels,
             spg_reduction=spg_reduction,
@@ -188,33 +179,25 @@ class AMFNeck(nn.Module):
         )
         self.burf3 = BURF(channels=out_channels)
         self.burf4 = BURF(channels=out_channels)
-        self.burf5 = BURF(channels=out_channels)
 
-    def forward(
-        self, features: tuple[Tensor, Tensor, Tensor, Tensor]
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        if len(features) != 4:
-            raise ValueError(f"AMFNeck expects exactly four backbone features, received {len(features)}.")
-        f2, f3, f4, f5 = features
+    def forward(self, features: tuple[Tensor, Tensor, Tensor]) -> tuple[Tensor, Tensor, Tensor]:
+        if len(features) != 3:
+            raise ValueError(f"AMFNeck expects exactly three backbone features, received {len(features)}.")
+        f2, f3, f4e = features
         ensure_feature_channels(f2, expected_channels=self.expected_in_channels[0], name="F2")
         ensure_feature_channels(f3, expected_channels=self.expected_in_channels[1], name="F3")
-        ensure_feature_channels(f4, expected_channels=self.expected_in_channels[2], name="F4")
-        ensure_feature_channels(f5, expected_channels=self.expected_in_channels[3], name="F5")
+        ensure_feature_channels(f4e, expected_channels=self.expected_in_channels[2], name="F4e")
 
         l2 = self.caf2(f2)
         l3 = self.caf3(f3)
-        l4 = self.caf4(f4)
-        l5 = self.caf5(f5)
+        l4 = self.caf4(f4e)
 
-        td4 = self.tdsf4(l4, F.interpolate(l5, size=l4.shape[-2:], mode="nearest"))
-        td3 = self.tdsf3(l3, F.interpolate(td4, size=l3.shape[-2:], mode="nearest"))
+        td3 = self.tdsf3(l3, F.interpolate(l4, size=l3.shape[-2:], mode="nearest"))
         n2 = self.tdsf2(l2, F.interpolate(td3, size=l2.shape[-2:], mode="nearest"))
         n3 = self.burf3(n2, td3)
-        n4 = self.burf4(n3, td4)
-        n5 = self.burf5(n4, l5)
+        n4 = self.burf4(n3, l4)
 
         ensure_feature_channels(n2, expected_channels=self.output_channels.n2, name="N2")
         ensure_feature_channels(n3, expected_channels=self.output_channels.n3, name="N3")
         ensure_feature_channels(n4, expected_channels=self.output_channels.n4, name="N4")
-        ensure_feature_channels(n5, expected_channels=self.output_channels.n5, name="N5")
-        return n2, n3, n4, n5
+        return n2, n3, n4

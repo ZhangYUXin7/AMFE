@@ -1,4 +1,4 @@
-"""Configuration helpers for AMFE detector construction."""
+"""Configuration helpers for AMFE 3-scale detector construction."""
 
 from __future__ import annotations
 

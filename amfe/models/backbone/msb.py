@@ -1,4 +1,4 @@
-﻿"""Main Semantic Branch (MSB) for AMFE-Backbone."""
+"""Main Semantic Branch (MSB) for the 3-scale AMFE backbone."""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ class C2fBlock(nn.Module):
 
 
 class SPPFLite(nn.Module):
-    """Lightweight SPPF tail for the deepest MSB stage."""
+    """Legacy SPPF tail retained for compatibility with historical imports."""
 
     def __init__(self, in_channels: int, out_channels: int, pool_kernel_size: int = 5) -> None:
         super().__init__()
@@ -97,19 +97,12 @@ class SPPFLite(nn.Module):
 
 
 class MSB(nn.Module):
-    """YOLOv8-native style semantic backbone used as the AMFE MSB.
-
-    Fixed shape contract from S2:
-    - S2: [B, 64, 160, 160]
-    - Stage-3: Downsample Conv -> C2f -> C3 [B, 256, 80, 80]
-    - Stage-4: Downsample Conv -> C2f -> C4 [B, 512, 40, 40]
-    - Stage-5: Downsample Conv -> C2f -> SPPF-Lite -> C5 [B, 512, 20, 20]
-    """
+    """YOLOv8-style semantic backbone that terminates at stride 16."""
 
     SUPPORTED_VARIANT = "yolov8_s"
     SUPPORTED_VARIANTS = {"yolov8_s", "yolov8_native"}
-    OUTPUT_CHANNELS = (256, 512, 512)
-    STAGE_DEPTHS = (2, 2, 1)
+    OUTPUT_CHANNELS = (256, 256, 512)
+    STAGE_DEPTHS = (1, 2, 2)
 
     def __init__(self, in_channels: int = 64, *, variant: str = SUPPORTED_VARIANT) -> None:
         super().__init__()
@@ -122,18 +115,17 @@ class MSB(nn.Module):
         self.in_channels = in_channels
         self.variant = variant
 
-        c3_channels, c4_channels, c5_channels = self.OUTPUT_CHANNELS
-        d3, d4, d5 = self.STAGE_DEPTHS
+        c2_channels, c3_channels, c4_channels = self.OUTPUT_CHANNELS
+        d2, d3, d4 = self.STAGE_DEPTHS
 
-        self.downsample3 = ConvBNAct(in_channels, c3_channels, kernel_size=3, stride=2)
+        self.stage2_proj = ConvBNAct(in_channels, c2_channels, kernel_size=1)
+        self.stage2 = C2fBlock(c2_channels, c2_channels, num_bottlenecks=d2)
+
+        self.downsample3 = ConvBNAct(c2_channels, c3_channels, kernel_size=3, stride=2)
         self.stage3 = C2fBlock(c3_channels, c3_channels, num_bottlenecks=d3)
 
         self.downsample4 = ConvBNAct(c3_channels, c4_channels, kernel_size=3, stride=2)
         self.stage4 = C2fBlock(c4_channels, c4_channels, num_bottlenecks=d4)
-
-        self.downsample5 = ConvBNAct(c4_channels, c5_channels, kernel_size=3, stride=2)
-        self.stage5 = C2fBlock(c5_channels, c5_channels, num_bottlenecks=d5)
-        self.sppf = SPPFLite(c5_channels, c5_channels)
 
     def forward(self, s2: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         if s2.ndim != 4:
@@ -142,26 +134,26 @@ class MSB(nn.Module):
             raise ValueError(
                 f"MSB expected {self.in_channels} channels from S2, received {s2.shape[1]}."
             )
-        if s2.shape[-2] % 8 != 0 or s2.shape[-1] % 8 != 0:
-            raise ValueError("MSB expects S2 height and width divisible by 8.")
+        if s2.shape[-2] % 4 != 0 or s2.shape[-1] % 4 != 0:
+            raise ValueError("MSB expects S2 height and width divisible by 4.")
 
-        # Stage-3 semantic extraction: S2 [B, 64, H/4, W/4] -> C3 [B, 256, H/8, W/8]
-        c3 = self.stage3(self.downsample3(s2))
-        # Stage-4 semantic extraction: C3 [B, 256, H/8, W/8] -> C4 [B, 512, H/16, W/16]
+        c2 = self.stage2(self.stage2_proj(s2))
+        c3 = self.stage3(self.downsample3(c2))
         c4 = self.stage4(self.downsample4(c3))
-        # Stage-5 semantic extraction: C4 [B, 512, H/16, W/16] -> C5 [B, 512, H/32, W/32]
-        c5 = self.sppf(self.stage5(self.downsample5(c4)))
 
         expected_shapes = (
-            (self.OUTPUT_CHANNELS[0], s2.shape[-2] // 2, s2.shape[-1] // 2),
-            (self.OUTPUT_CHANNELS[1], s2.shape[-2] // 4, s2.shape[-1] // 4),
-            (self.OUTPUT_CHANNELS[2], s2.shape[-2] // 8, s2.shape[-1] // 8),
+            (self.OUTPUT_CHANNELS[0], s2.shape[-2], s2.shape[-1]),
+            (self.OUTPUT_CHANNELS[1], s2.shape[-2] // 2, s2.shape[-1] // 2),
+            (self.OUTPUT_CHANNELS[2], s2.shape[-2] // 4, s2.shape[-1] // 4),
         )
-        for feature, expected, name in zip((c3, c4, c5), expected_shapes, ("C3", "C4", "C5"), strict=True):
+        for feature, expected, name in zip((c2, c3, c4), expected_shapes, ("C2", "C3", "C4"), strict=True):
             expected_channels, expected_h, expected_w = expected
             if feature.shape[1] != expected_channels or feature.shape[-2:] != (expected_h, expected_w):
                 raise AssertionError(
                     f"{name} contract mismatch: expected [B, {expected_channels}, {expected_h}, {expected_w}], "
                     f"received {tuple(feature.shape)}."
                 )
-        return c3, c4, c5
+        return c2, c3, c4
+
+
+__all__ = ["C2fBlock", "MSB", "SPPFLite", "YOLOStyleBottleneck"]

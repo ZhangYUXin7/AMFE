@@ -187,18 +187,23 @@ def run_real_training(config: dict[str, Any]) -> None:
     """Launch a real-data training run through the Ultralytics detection trainer."""
 
     inspect_real_run_inputs(config)
-    trainer = AMFEDetectionTrainer(overrides=build_trainer_overrides(config))
+    training_cfg = config.get("training", {})
+    trainer = AMFEDetectionTrainer(
+        overrides=build_trainer_overrides(config),
+        fps_benchmark=training_cfg.get("fps_benchmark"),
+    )
     trainer.train()
 
-    print(
-        "Real-data training completed:",
-        {
-            "save_dir": str(trainer.save_dir),
-            "best": str(trainer.best),
-            "last": str(trainer.last),
-            "results_csv": str(trainer.csv),
-        },
-    )
+    summary = {
+        "save_dir": str(trainer.save_dir),
+        "best": str(trainer.best),
+        "last": str(trainer.last),
+        "results_csv": str(trainer.csv),
+    }
+    if trainer.fps_benchmark_result is not None:
+        summary["fps_benchmark"] = trainer.fps_benchmark_result
+
+    print("Real-data training completed:", summary)
 
 
 def main() -> None:

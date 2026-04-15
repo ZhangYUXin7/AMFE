@@ -1,9 +1,4 @@
-﻿"""Detector wiring for Phase D.
-
-This module connects the implemented AMFE-Backbone and AMF-Neck to the native
-Ultralytics ``Detect`` head, and exposes a minimal training-style path that
-reuses Ultralytics' detection loss without redesigning the head or objective.
-"""
+"""Detector wiring for the migrated 3-scale AMFE model."""
 
 from __future__ import annotations
 
@@ -31,17 +26,21 @@ class LossHyperparameters:
 
 @dataclass(frozen=True)
 class AMFEModelConfig:
-    """Configuration for the integrated AMFE detector."""
+    """Configuration for the integrated 3-scale AMFE detector."""
 
     num_classes: int = 80
     in_channels: int = 3
     neck_channels: int = 256
     msb_variant: str = "yolov8_s"
+    use_lem: bool = False
     lem_channels: int = 32
-    mbfm_gate_reduction: int = 8
+    fusion_gate_reduction: int = 8
     tdsf_spg_reduction: int = 8
     tdsf_dpg_kernels: tuple[int, int, int] = (3, 5, 7)
-    detect_feature_strides: tuple[int, int, int, int] = (4, 8, 16, 32)
+    rfb_channels: int = 512
+    rfb_expand_ratio: float = 1.0
+    rfb_dilations: tuple[int, int] = (3, 5)
+    detect_feature_strides: tuple[int, int, int] = (4, 8, 16)
     stride_init_image_size: int = 256
     loss_hyperparameters: LossHyperparameters = LossHyperparameters()
 
@@ -52,6 +51,7 @@ class AMFEModelConfig:
         loss_values = values.get("loss_hyperparameters", {})
         if not isinstance(loss_values, dict):
             raise TypeError("loss_hyperparameters must be a mapping when provided.")
+
         dpg_kernels = values.get("tdsf_dpg_kernels", cls.tdsf_dpg_kernels)
         if isinstance(dpg_kernels, list):
             dpg_kernels = tuple(int(kernel) for kernel in dpg_kernels)
@@ -59,22 +59,43 @@ class AMFEModelConfig:
             dpg_kernels = tuple(int(kernel) for kernel in dpg_kernels)
         if not isinstance(dpg_kernels, tuple) or len(dpg_kernels) != 3:
             raise TypeError("tdsf_dpg_kernels must be a three-item list or tuple of integers.")
+
+        rfb_dilations = values.get("rfb_dilations", cls.rfb_dilations)
+        if isinstance(rfb_dilations, list):
+            rfb_dilations = tuple(int(dilation) for dilation in rfb_dilations)
+        elif isinstance(rfb_dilations, tuple):
+            rfb_dilations = tuple(int(dilation) for dilation in rfb_dilations)
+        if not isinstance(rfb_dilations, tuple) or len(rfb_dilations) != 2:
+            raise TypeError("rfb_dilations must be a two-item list or tuple of integers.")
+
         detect_feature_strides = values.get("detect_feature_strides", cls.detect_feature_strides)
         if isinstance(detect_feature_strides, list):
             detect_feature_strides = tuple(int(stride) for stride in detect_feature_strides)
         elif isinstance(detect_feature_strides, tuple):
             detect_feature_strides = tuple(int(stride) for stride in detect_feature_strides)
-        if not isinstance(detect_feature_strides, tuple) or len(detect_feature_strides) != 4:
-            raise TypeError("detect_feature_strides must be a four-item list or tuple of integers.")
+        if not isinstance(detect_feature_strides, tuple) or len(detect_feature_strides) != 3:
+            raise TypeError("detect_feature_strides must be a three-item list or tuple of integers.")
+
+        fusion_gate_reduction = int(
+            values.get(
+                "fusion_gate_reduction",
+                values.get("mbfm_gate_reduction", cls.fusion_gate_reduction),
+            )
+        )
+
         return cls(
             num_classes=int(values.get("num_classes", cls.num_classes)),
             in_channels=int(values.get("in_channels", cls.in_channels)),
             neck_channels=int(values.get("neck_channels", cls.neck_channels)),
             msb_variant=str(values.get("msb_variant", cls.msb_variant)),
+            use_lem=bool(values.get("use_lem", cls.use_lem)),
             lem_channels=int(values.get("lem_channels", cls.lem_channels)),
-            mbfm_gate_reduction=int(values.get("mbfm_gate_reduction", cls.mbfm_gate_reduction)),
+            fusion_gate_reduction=fusion_gate_reduction,
             tdsf_spg_reduction=int(values.get("tdsf_spg_reduction", cls.tdsf_spg_reduction)),
             tdsf_dpg_kernels=dpg_kernels,
+            rfb_channels=int(values.get("rfb_channels", cls.rfb_channels)),
+            rfb_expand_ratio=float(values.get("rfb_expand_ratio", cls.rfb_expand_ratio)),
+            rfb_dilations=rfb_dilations,
             detect_feature_strides=detect_feature_strides,
             stride_init_image_size=int(values.get("stride_init_image_size", cls.stride_init_image_size)),
             loss_hyperparameters=LossHyperparameters(
@@ -86,7 +107,7 @@ class AMFEModelConfig:
 
 
 class AMFEYOLODetectionModel(nn.Module):
-    """AMFE detector with Ultralytics Detect head and loss-compatible metadata."""
+    """AMFE detector with a 3-scale Ultralytics Detect head."""
 
     def __init__(self, config: AMFEModelConfig) -> None:
         super().__init__()
@@ -95,21 +116,24 @@ class AMFEYOLODetectionModel(nn.Module):
         self.backbone = AMFEBackbone(
             in_channels=config.in_channels,
             msb_variant=config.msb_variant,
+            use_lem=config.use_lem,
             lem_channels=config.lem_channels,
-            mbfm_gate_reduction=config.mbfm_gate_reduction,
+            fusion_gate_reduction=config.fusion_gate_reduction,
+            rfb_channels=config.rfb_channels,
+            rfb_expand_ratio=config.rfb_expand_ratio,
+            rfb_dilations=config.rfb_dilations,
         )
         self.neck = AMFNeck(
             in_channels=(
                 self.backbone.output_channels.f2,
                 self.backbone.output_channels.f3,
-                self.backbone.output_channels.f4,
-                self.backbone.output_channels.f5,
+                self.backbone.output_channels.f4e,
             ),
             out_channels=config.neck_channels,
             spg_reduction=config.tdsf_spg_reduction,
             dpg_kernels=config.tdsf_dpg_kernels,
         )
-        self.detect = Detect(nc=config.num_classes, ch=(config.neck_channels,) * 4)
+        self.detect = Detect(nc=config.num_classes, ch=(config.neck_channels,) * 3)
         self.model = nn.ModuleList([self.backbone, self.neck, self.detect])
         self.args = SimpleNamespace(
             box=config.loss_hyperparameters.box,
@@ -123,10 +147,14 @@ class AMFEYOLODetectionModel(nn.Module):
             "in_channels": config.in_channels,
             "neck_channels": config.neck_channels,
             "msb_variant": config.msb_variant,
+            "use_lem": config.use_lem,
             "lem_channels": config.lem_channels,
-            "mbfm_gate_reduction": config.mbfm_gate_reduction,
+            "fusion_gate_reduction": config.fusion_gate_reduction,
             "tdsf_spg_reduction": config.tdsf_spg_reduction,
             "tdsf_dpg_kernels": list(config.tdsf_dpg_kernels),
+            "rfb_channels": config.rfb_channels,
+            "rfb_expand_ratio": config.rfb_expand_ratio,
+            "rfb_dilations": list(config.rfb_dilations),
             "detect_feature_strides": list(config.detect_feature_strides),
             "stride_init_image_size": config.stride_init_image_size,
             "loss_hyperparameters": {
@@ -177,8 +205,8 @@ class AMFEYOLODetectionModel(nn.Module):
             self.train()
         return stride
 
-    def forward_features(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        """Return N2/N3/N4/N5 features before the Detect head."""
+    def forward_features(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        """Return N2/N3/N4 features before the Detect head."""
 
         return self.neck(self.backbone(x))
 
@@ -265,11 +293,15 @@ def build_amfe_detector(
     *,
     neck_channels: int = 256,
     msb_variant: str = "yolov8_s",
+    use_lem: bool = False,
     lem_channels: int = 32,
-    mbfm_gate_reduction: int = 8,
+    fusion_gate_reduction: int = 8,
     tdsf_spg_reduction: int = 8,
     tdsf_dpg_kernels: tuple[int, int, int] = (3, 5, 7),
-    detect_feature_strides: tuple[int, int, int, int] = (4, 8, 16, 32),
+    rfb_channels: int = 512,
+    rfb_expand_ratio: float = 1.0,
+    rfb_dilations: tuple[int, int] = (3, 5),
+    detect_feature_strides: tuple[int, int, int] = (4, 8, 16),
 ) -> AMFEYOLODetectionModel:
     """Build an integrated AMFE detector with explicit configuration wiring."""
 
@@ -279,10 +311,14 @@ def build_amfe_detector(
             in_channels=in_channels,
             neck_channels=neck_channels,
             msb_variant=msb_variant,
+            use_lem=use_lem,
             lem_channels=lem_channels,
-            mbfm_gate_reduction=mbfm_gate_reduction,
+            fusion_gate_reduction=fusion_gate_reduction,
             tdsf_spg_reduction=tdsf_spg_reduction,
             tdsf_dpg_kernels=tdsf_dpg_kernels,
+            rfb_channels=rfb_channels,
+            rfb_expand_ratio=rfb_expand_ratio,
+            rfb_dilations=rfb_dilations,
             detect_feature_strides=detect_feature_strides,
         )
     )

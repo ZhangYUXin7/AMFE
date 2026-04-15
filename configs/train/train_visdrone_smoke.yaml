@@ -19,6 +19,11 @@ training:
   deterministic: true
   verbose: true
   project: runs/phase_e
-  name: visdrone_smoke
+  name: visdrone_3scale_smoke
   exist_ok: true
   synthetic_smoke: false
+  fps_benchmark:
+    enabled: true
+    batch_size: 1
+    warmup_iters: 10
+    timed_iters: 30

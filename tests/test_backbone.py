@@ -1,11 +1,20 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import pytest
 
 
 torch = pytest.importorskip("torch")
 
-from amfe.models.backbone import ADB, AMFEBackbone, DEB, DPSStem, LEM, LGCB, MBFM, MSB, SRAFMBFM
+from amfe.models.backbone import (
+    ADB,
+    AMFEBackbone,
+    DEB,
+    DPSStem,
+    LEM,
+    MSB,
+    RFBLite,
+    SemanticDetailFusion,
+)
 
 
 @torch.no_grad()
@@ -16,17 +25,10 @@ def test_lem_output_shape() -> None:
 
 
 @torch.no_grad()
-def test_dps_stem_output_shape() -> None:
-    module = DPSStem(in_channels=32, out_channels=64, stem_channels=32).eval()
-    outputs = module(torch.randn(2, 32, 640, 640))
+def test_dps_stem_output_shape_without_lem() -> None:
+    module = DPSStem(in_channels=3, out_channels=64, stem_channels=32).eval()
+    outputs = module(torch.randn(2, 3, 640, 640))
     assert outputs.shape == (2, 64, 160, 160)
-
-
-@torch.no_grad()
-def test_amfe_backbone_f2_branch_output_shape() -> None:
-    model = AMFEBackbone().eval()
-    outputs = model.f2_branch(torch.randn(2, 64, 160, 160))
-    assert outputs.shape == (2, 256, 160, 160)
 
 
 @torch.no_grad()
@@ -45,96 +47,99 @@ def test_deb_stride1_output_shape() -> None:
 
 @torch.no_grad()
 def test_adb_output_shapes() -> None:
-    module = ADB(in_channels=64, d3_channels=128, d4_channels=256).eval()
-    d3, d4 = module(torch.randn(2, 64, 160, 160))
+    module = ADB(in_channels=64, d2_channels=128, d3_channels=128).eval()
+    d2, d3 = module(torch.randn(2, 64, 160, 160))
 
+    assert d2.shape == (2, 128, 160, 160)
     assert d3.shape == (2, 128, 80, 80)
-    assert d4.shape == (2, 256, 40, 40)
 
 
 @torch.no_grad()
 def test_msb_output_shapes() -> None:
     module = MSB(in_channels=64).eval()
-    c3, c4, c5 = module(torch.randn(2, 64, 160, 160))
+    c2, c3, c4 = module(torch.randn(2, 64, 160, 160))
 
+    assert c2.shape == (2, 256, 160, 160)
     assert c3.shape == (2, 256, 80, 80)
     assert c4.shape == (2, 512, 40, 40)
-    assert c5.shape == (2, 512, 20, 20)
 
 
 @torch.no_grad()
-def test_lgcb_output_shapes() -> None:
-    module = LGCB(in_channels=512, context_channels=256).eval()
-    c3 = torch.randn(2, 256, 80, 80)
-    c4 = torch.randn(2, 512, 40, 40)
-    c5 = torch.randn(2, 512, 20, 20)
-
-    g3, g4, g5 = module(c3, c4, c5)
-
-    assert g3.shape == (2, 256, 80, 80)
-    assert g4.shape == (2, 256, 40, 40)
-    assert g5.shape == (2, 256, 20, 20)
-
-
-@torch.no_grad()
-def test_sraf_mbfm_output_shapes() -> None:
-    assert MBFM is SRAFMBFM
-
-    module = MBFM(
+def test_semantic_detail_fusion_output_shape() -> None:
+    module = SemanticDetailFusion(
         semantic_channels=256,
         detail_channels=128,
-        context_channels=256,
         out_channels=256,
     ).eval()
     semantic = torch.randn(2, 256, 80, 80)
     detail = torch.randn(2, 128, 80, 80)
-    context = torch.randn(2, 256, 80, 80)
 
-    fused = module(semantic, detail, context)
+    fused = module(semantic, detail)
 
     assert fused.shape == (2, 256, 80, 80)
 
 
 @torch.no_grad()
-def test_sraf_mbfm_f5_output_shape() -> None:
-    module = SRAFMBFM(
-        semantic_channels=512,
-        detail_channels=None,
-        context_channels=256,
-        out_channels=512,
+def test_semantic_detail_fusion_channel_mismatch_raises() -> None:
+    module = SemanticDetailFusion(
+        semantic_channels=256,
+        detail_channels=128,
+        out_channels=256,
     ).eval()
-    semantic = torch.randn(2, 512, 20, 20)
-    context = torch.randn(2, 256, 20, 20)
 
-    fused = module(semantic, None, context)
+    with pytest.raises(ValueError, match="detail channels"):
+        module(torch.randn(2, 256, 80, 80), torch.randn(2, 64, 80, 80))
 
-    assert fused.shape == (2, 512, 20, 20)
+
+@torch.no_grad()
+def test_semantic_detail_fusion_spatial_mismatch_raises() -> None:
+    module = SemanticDetailFusion(
+        semantic_channels=256,
+        detail_channels=128,
+        out_channels=256,
+    ).eval()
+
+    with pytest.raises(ValueError, match="spatial size"):
+        module(torch.randn(2, 256, 80, 80), torch.randn(2, 128, 40, 40))
+
+
+@torch.no_grad()
+def test_rfb_lite_output_shape() -> None:
+    module = RFBLite(in_channels=512, out_channels=512).eval()
+    outputs = module(torch.randn(2, 512, 40, 40))
+    assert outputs.shape == (2, 512, 40, 40)
+
+
+@torch.no_grad()
+def test_rfb_lite_invalid_input_raises() -> None:
+    module = RFBLite(in_channels=512, out_channels=512).eval()
+
+    with pytest.raises(ValueError, match="expected 512 channels"):
+        module(torch.randn(2, 256, 40, 40))
 
 
 @torch.no_grad()
 def test_amfe_backbone_output_shapes_and_shape_trace() -> None:
-    model = AMFEBackbone().eval()
+    model = AMFEBackbone(use_lem=False).eval()
     inputs = torch.randn(1, 3, 640, 640)
 
-    f2, f3, f4, f5 = model(inputs)
+    outputs = model(inputs)
+    assert len(outputs) == 3
+    f2, f3, f4e = outputs
 
+    assert isinstance(model.lem, torch.nn.Identity)
     assert f2.shape == (1, 256, 160, 160)
     assert f3.shape == (1, 256, 80, 80)
-    assert f4.shape == (1, 512, 40, 40)
-    assert f5.shape == (1, 512, 20, 20)
+    assert f4e.shape == (1, 512, 40, 40)
     assert model.last_forward_shapes == {
-        "LEM": (1, 32, 640, 640),
+        "LEM": (1, 3, 640, 640),
         "S2": (1, 64, 160, 160),
-        "F2": (1, 256, 160, 160),
+        "C2": (1, 256, 160, 160),
         "C3": (1, 256, 80, 80),
         "C4": (1, 512, 40, 40),
-        "C5": (1, 512, 20, 20),
+        "D2": (1, 128, 160, 160),
         "D3": (1, 128, 80, 80),
-        "D4": (1, 256, 40, 40),
-        "G3": (1, 256, 80, 80),
-        "G4": (1, 256, 40, 40),
-        "G5": (1, 256, 20, 20),
+        "F2": (1, 256, 160, 160),
         "F3": (1, 256, 80, 80),
-        "F4": (1, 512, 40, 40),
-        "F5": (1, 512, 20, 20),
+        "F4e": (1, 512, 40, 40),
     }

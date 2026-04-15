@@ -3,7 +3,7 @@ data: configs/data/visdrone_local.yaml
 training:
   imgsz: 640
   epochs: 200
-  batch: 6
+  batch: 4
   workers: 4
   optimizer: SGD
   lr0: 0.01
@@ -19,7 +19,12 @@ training:
   deterministic: true
   verbose: true
   project: runs/experiments
-  name: visdrone_LEM_SRAFMBFM_F2
+  name: visdrone_3scale_rfb
   exist_ok: true
   synthetic_smoke: false
-#  resume: D:/code/AMFE/runs/experiments/visdrone_LEM_SRAFMBFM/weights/last.pt
+  fps_benchmark:
+    enabled: true
+    batch_size: 1
+    warmup_iters: 20
+    timed_iters: 50
+#  resume: D:/code/AMFE/runs/experiments/visdrone_3scale_rfb/weights/last.pt

@@ -1,4 +1,4 @@
-"""Lightweight channel-gated fusion modules for AMFE-Backbone."""
+"""Lightweight channel-gated fusion modules for AMFE backbone variants."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class CDG(nn.Module):
 
 
 class ChannelGate(nn.Module):
-    """Lightweight squeeze-style channel gate used by the upgraded MBFM."""
+    """Lightweight squeeze-style channel gate."""
 
     def __init__(self, channels: int, reduction: int = 8) -> None:
         super().__init__()
@@ -48,18 +48,86 @@ class ChannelGate(nn.Module):
         return self.output_activation(self.expand(self.activation(self.reduce(self.pool(x)))))
 
 
+class SemanticDetailFusion(nn.Module):
+    """Semantic-anchor fusion used by the migrated 3-scale backbone."""
+
+    def __init__(
+        self,
+        semantic_channels: int,
+        detail_channels: int | None,
+        out_channels: int,
+        *,
+        gate_reduction: int = 8,
+    ) -> None:
+        super().__init__()
+        self.semantic_channels = semantic_channels
+        self.detail_channels = detail_channels
+        self.out_channels = out_channels
+
+        self.semantic_anchor = (
+            nn.Identity()
+            if semantic_channels == out_channels
+            else ConvBNAct(semantic_channels, out_channels, kernel_size=1, activation=False)
+        )
+        self.detail_align = (
+            ConvBNAct(detail_channels, out_channels, kernel_size=1, activation=False)
+            if detail_channels is not None
+            else None
+        )
+        self.detail_gate = (
+            ChannelGate(out_channels, reduction=gate_reduction)
+            if detail_channels is not None
+            else None
+        )
+        self.reconstruct = ConvBNAct(
+            out_channels,
+            out_channels,
+            kernel_size=3,
+            groups=out_channels,
+        )
+
+    def forward(self, semantic: Tensor, detail: Tensor | None) -> Tensor:
+        if semantic.ndim != 4:
+            raise ValueError(
+                f"SemanticDetailFusion expects a 4D semantic tensor, received {tuple(semantic.shape)}."
+            )
+        if semantic.shape[1] != self.semantic_channels:
+            raise ValueError(
+                "SemanticDetailFusion expected "
+                f"{self.semantic_channels} semantic channels, received {semantic.shape[1]}."
+            )
+
+        fused = self.semantic_anchor(semantic)
+        if self.detail_align is None:
+            if detail is not None:
+                raise ValueError("This SemanticDetailFusion stage does not accept a detail feature.")
+        else:
+            if detail is None:
+                raise ValueError("This SemanticDetailFusion stage requires a detail feature.")
+            if detail.ndim != 4:
+                raise ValueError(
+                    f"SemanticDetailFusion expects a 4D detail tensor, received {tuple(detail.shape)}."
+                )
+            if self.detail_channels is None or detail.shape[1] != self.detail_channels:
+                raise ValueError(
+                    "SemanticDetailFusion expected "
+                    f"{self.detail_channels} detail channels, received {detail.shape[1]}."
+                )
+            if detail.shape[-2:] != semantic.shape[-2:]:
+                raise ValueError("SemanticDetailFusion detail feature must align with the semantic spatial size.")
+            if self.detail_gate is None:
+                raise AssertionError("detail_gate must exist when detail fusion is enabled.")
+            aligned_detail = self.detail_align(detail)
+            fused = fused + self.detail_gate(aligned_detail) * aligned_detail
+
+        fused = self.reconstruct(fused)
+        if fused.shape != (semantic.shape[0], self.out_channels, *semantic.shape[-2:]):
+            raise AssertionError("SemanticDetailFusion output does not match the configured contract.")
+        return fused
+
+
 class SRAFMBFM(nn.Module):
-    """Semantic-anchor residual additive fusion with lightweight channel gating.
-
-    Updated fusion equations:
-    - F3 = DWConv(C3 + gate_d(Align(D3)) * Align(D3) + gate_g(Align(G3)) * Align(G3))
-    - F4 = DWConv(C4 + gate_d(Align(D4)) * Align(D4) + gate_g(Align(G4)) * Align(G4))
-    - F5 = DWConv(C5 + gate_g(Align(G5)) * Align(G5))
-
-    The semantic branch remains the anchor. Detail and context branches only act
-    as lightweight residual compensations, avoiding concat-heavy fusion and
-    large post-fusion reconstruction stacks.
-    """
+    """Legacy semantic-detail-context fusion retained for compatibility."""
 
     def __init__(
         self,
@@ -146,4 +214,11 @@ SimpleResidualAdditiveFusion = SRAFMBFM
 MBFM = SRAFMBFM
 
 
-__all__ = ["CDG", "MBFM", "SRAFMBFM", "SimpleResidualAdditiveFusion"]
+__all__ = [
+    "CDG",
+    "ChannelGate",
+    "MBFM",
+    "SRAFMBFM",
+    "SemanticDetailFusion",
+    "SimpleResidualAdditiveFusion",
+]

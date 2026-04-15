@@ -1,4 +1,4 @@
-﻿"""Auxiliary detail branch modules for AMFE-Backbone."""
+"""Auxiliary detail branch modules for the 3-scale AMFE backbone."""
 
 from __future__ import annotations
 
@@ -75,18 +75,22 @@ class DEB(nn.Module):
 
 
 class ADB(nn.Module):
-    """Auxiliary Detail Branch.
+    """Auxiliary Detail Branch for shallow and mid-level compensation.
 
-    The branch starts from the shared shallow feature S2 and only extends to
-    D3/D4 so it remains a lightweight local-detail compensator instead of a
-    second semantic backbone.
+    The branch starts from the shared shallow feature ``S2`` and only produces:
+    - ``D2`` at stride 4
+    - ``D3`` at stride 8
+
+    It does not extend to the deepest semantic stage.
     """
 
-    def __init__(self, in_channels: int = 64, d3_channels: int = 128, d4_channels: int = 256) -> None:
+    def __init__(self, in_channels: int = 64, d2_channels: int = 128, d3_channels: int = 128) -> None:
         super().__init__()
         self.in_channels = in_channels
-        self.deb3 = DEB(in_channels, d3_channels, stride=2)
-        self.deb4 = DEB(d3_channels, d4_channels, stride=2)
+        self.d2_channels = d2_channels
+        self.d3_channels = d3_channels
+        self.deb2 = DEB(in_channels, d2_channels, stride=1)
+        self.deb3 = DEB(d2_channels, d3_channels, stride=2)
 
     def forward(self, s2: Tensor) -> tuple[Tensor, Tensor]:
         if s2.ndim != 4:
@@ -95,9 +99,28 @@ class ADB(nn.Module):
             raise ValueError(
                 f"ADB expected {self.in_channels} input channels from S2, received {s2.shape[1]}."
             )
+        if s2.shape[-2] % 2 != 0 or s2.shape[-1] % 2 != 0:
+            raise ValueError("ADB expects S2 height and width divisible by 2.")
 
-        # D3 [B, 128, H/2, W/2] relative to S2 -> stride 8 from the image.
-        d3 = self.deb3(s2)
-        # D4 [B, 256, H/4, W/4] relative to S2 -> stride 16 from the image.
-        d4 = self.deb4(d3)
-        return d3, d4
+        d2 = self.deb2(s2)
+        d3 = self.deb3(d2)
+
+        expected = (
+            (self.d2_channels, s2.shape[-2], s2.shape[-1]),
+            (self.d3_channels, s2.shape[-2] // 2, s2.shape[-1] // 2),
+        )
+        for feature, (channels, expected_h, expected_w), name in zip(
+            (d2, d3),
+            expected,
+            ("D2", "D3"),
+            strict=True,
+        ):
+            if feature.shape[1] != channels or feature.shape[-2:] != (expected_h, expected_w):
+                raise AssertionError(
+                    f"{name} contract mismatch: expected [B, {channels}, {expected_h}, {expected_w}], "
+                    f"received {tuple(feature.shape)}."
+                )
+        return d2, d3
+
+
+__all__ = ["ADB", "DEB"]

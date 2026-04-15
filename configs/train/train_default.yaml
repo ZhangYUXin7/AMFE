@@ -14,3 +14,8 @@ training:
   synthetic_batch_size: 2
   synthetic_image_size: 128
   synthetic_num_classes: 3
+  fps_benchmark:
+    enabled: true
+    batch_size: 1
+    warmup_iters: 10
+    timed_iters: 30

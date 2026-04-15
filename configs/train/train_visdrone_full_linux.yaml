@@ -19,7 +19,12 @@ training:
   deterministic: true
   verbose: true
   project: runs/experiments
-  name: visdrone_960_b8_amp
+  name: visdrone_3scale_rfb_linux
   exist_ok: false
   synthetic_smoke: false
-#  resume: /srv/amfe/runs/experiments/visdrone_960_b8_amp3/weights/last.pt
+  fps_benchmark:
+    enabled: true
+    batch_size: 1
+    warmup_iters: 20
+    timed_iters: 50
+#  resume: /srv/amfe/runs/experiments/visdrone_3scale_rfb_linux/weights/last.pt

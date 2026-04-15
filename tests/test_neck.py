@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import pytest
 
@@ -45,18 +45,42 @@ def test_burf_output_shape() -> None:
 
 
 @torch.no_grad()
+def test_burf_rejects_shape_mismatch_after_downsampling() -> None:
+    module = BURF(channels=256).eval()
+    lower = torch.randn(2, 256, 32, 32)
+    higher = torch.randn(2, 256, 15, 15)
+
+    with pytest.raises(ValueError, match="aligned refinement features"):
+        module(lower, higher)
+
+
+@torch.no_grad()
 def test_amf_neck_output_shapes() -> None:
     model = AMFNeck()
     features = (
-        torch.randn(2, 256, 64, 64),
-        torch.randn(2, 256, 32, 32),
-        torch.randn(2, 512, 16, 16),
-        torch.randn(2, 512, 8, 8),
+        torch.randn(2, 256, 160, 160),
+        torch.randn(2, 256, 80, 80),
+        torch.randn(2, 512, 40, 40),
     )
 
-    n2, n3, n4, n5 = model(features)
+    outputs = model(features)
+    assert len(outputs) == 3
+    n2, n3, n4 = outputs
 
-    assert n2.shape == (2, 256, 64, 64)
-    assert n3.shape == (2, 256, 32, 32)
-    assert n4.shape == (2, 256, 16, 16)
-    assert n5.shape == (2, 256, 8, 8)
+    assert n2.shape == (2, 256, 160, 160)
+    assert n3.shape == (2, 256, 80, 80)
+    assert n4.shape == (2, 256, 40, 40)
+
+
+@torch.no_grad()
+def test_amf_neck_rejects_four_input_features() -> None:
+    model = AMFNeck()
+    with pytest.raises(ValueError, match="exactly three"):
+        model(
+            (
+                torch.randn(1, 256, 160, 160),
+                torch.randn(1, 256, 80, 80),
+                torch.randn(1, 512, 40, 40),
+                torch.randn(1, 512, 20, 20),
+            )
+        )
